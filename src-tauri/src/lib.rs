@@ -7,7 +7,12 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 use sysinfo::System;
-use tauri::{AppHandle, Manager, State};
+use tauri::{
+    AppHandle, Manager, State, 
+    menu::{Menu, MenuItem},
+    tray::{TrayIcon, TrayIconBuilder, MouseButton, MouseButtonState},
+    image::Image,
+};
 use tokio::time::interval;
 use uuid::Uuid;
 
@@ -168,8 +173,9 @@ fn add_app_bloqueada(state: State<AppState>, app: NuevaApp) -> Result<AppBloquea
     let db = state.db.lock().map_err(|e| e.to_string())?;
     
     let hash = compute_file_hash(&app.ruta_ejecutable).ok();
+    let icono = extract_icon_as_base64(&app.ruta_ejecutable);
     
-    db.add_app_bloqueada(app, hash).map_err(|e| e.to_string())
+    db.add_app_bloqueada(app, hash, icono).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -185,7 +191,17 @@ fn toggle_app_bloqueada(state: State<AppState>, id: String) -> Result<AppBloquea
 }
 
 #[tauri::command]
-fn detect_steam_games() -> Result<Vec<AppBloqueada>, String> {
+fn detect_all_games() -> Result<Vec<AppBloqueada>, String> {
+    let mut games = Vec::new();
+    
+    games.extend(detect_steam_games_internal());
+    games.extend(detect_epic_games_internal());
+    games.extend(detect_gog_games_internal());
+    
+    Ok(games)
+}
+
+fn detect_steam_games_internal() -> Vec<AppBloqueada> {
     let mut games = Vec::new();
 
     if let Some(local_app_data) = dirs::data_local_dir() {
@@ -215,12 +231,13 @@ fn detect_steam_games() -> Result<Vec<AppBloqueada>, String> {
 
                                 if exe_path.exists() {
                                     let hash = compute_file_hash(&exe_path.to_string_lossy()).ok();
+                                    let icono = extract_icon_as_base64(&exe_path.to_string_lossy());
                                     
                                     games.push(AppBloqueada {
                                         id: Uuid::new_v4().to_string(),
                                         nombre,
                                         ruta_ejecutable: exe_path.to_string_lossy().to_string(),
-                                        icono: None,
+                                        icono,
                                         hash_sha256: hash,
                                         categoria: "STEAM".to_string(),
                                         ultima_ejecucion: None,
@@ -237,7 +254,138 @@ fn detect_steam_games() -> Result<Vec<AppBloqueada>, String> {
         }
     }
 
-    Ok(games)
+    games
+}
+
+fn detect_epic_games_internal() -> Vec<AppBloqueada> {
+    let mut games = Vec::new();
+    
+    if let Some(program_data) = std::env::var_os("ProgramData") {
+        let epic_path = PathBuf::from(program_data).join("Epic");
+        let manifest_path = epic_path.join("EpicGamesLauncher").join("Data").join("Manifests");
+        
+        if manifest_path.exists() {
+            if let Ok(entries) = std::fs::read_dir(&manifest_path) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().map_or(false, |e| e == "item") {
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                                let nombre = json.get("DisplayName")
+                                    .or_else(|| json.get("AppName"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("Unknown Game")
+                                    .to_string();
+                                
+                                let install_location = json.get("InstallLocation")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                
+                                let exe_path = PathBuf::from(install_location);
+                                
+                                if exe_path.exists() {
+                                    if let Ok(dir_entries) = std::fs::read_dir(&exe_path) {
+                                        for dir_entry in dir_entries.flatten() {
+                                            let entry_path = dir_entry.path();
+                                            if entry_path.extension().map_or(false, |e| e == "exe") {
+                                                let exe_name = entry_path.file_name()
+                                                    .and_then(|n| n.to_str())
+                                                    .unwrap_or("")
+                                                    .to_string();
+                                                
+                                                if !exe_name.to_lowercase().contains("epicgameslauncher")
+                                                    && !exe_name.to_lowercase().contains("unrealengine") {
+                                                    let hash = compute_file_hash(&entry_path.to_string_lossy()).ok();
+                                                    let icono = extract_icon_as_base64(&entry_path.to_string_lossy());
+                                                    
+                                                    games.push(AppBloqueada {
+                                                        id: Uuid::new_v4().to_string(),
+                                                        nombre,
+                                                        ruta_ejecutable: entry_path.to_string_lossy().to_string(),
+                                                        icono,
+                                                        hash_sha256: hash,
+                                                        categoria: "EPIC".to_string(),
+                                                        ultima_ejecucion: None,
+                                                        veces_ejecutado: 0,
+                                                        bloqueado: true,
+                                                        creado_en: Local::now().to_rfc3339(),
+                                                    });
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    games
+}
+
+fn detect_gog_games_internal() -> Vec<AppBloqueada> {
+    let mut games = Vec::new();
+    
+    if let Some(local_app_data) = dirs::data_local_dir() {
+        let gog_path = local_app_data.join("GOG.com").join("Games");
+        
+        if gog_path.exists() {
+            if let Ok(entries) = std::fs::read_dir(&gog_path) {
+                for entry in entries.flatten() {
+                    let game_path = entry.path();
+                    if game_path.is_dir() {
+                        let ini_path = game_path.join("goggame.dll");
+                        let exe_path = game_path.join(format!("{}.exe", game_path.file_name().and_then(|n| n.to_str()).unwrap_or("")));
+                        
+                        if !exe_path.exists() {
+                            if let Ok(dir_entries) = std::fs::read_dir(&game_path) {
+                                for dir_entry in dir_entries.flatten() {
+                                    let file_name = dir_entry.file_name();
+                                    let file_str = file_name.to_string_lossy().to_lowercase();
+                                    if file_str.ends_with(".exe") 
+                                        && !file_str.contains("unins")
+                                        && !file_str.contains("setup") {
+                                        let exe_path = dir_entry.path();
+                                        let hash = compute_file_hash(&exe_path.to_string_lossy()).ok();
+                                        let icono = extract_icon_as_base64(&exe_path.to_string_lossy());
+                                        let nombre = game_path.file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("Unknown Game")
+                                            .to_string();
+                                        
+                                        games.push(AppBloqueada {
+                                            id: Uuid::new_v4().to_string(),
+                                            nombre,
+                                            ruta_ejecutable: exe_path.to_string_lossy().to_string(),
+                                            icono,
+                                            hash_sha256: hash,
+                                            categoria: "GOG".to_string(),
+                                            ultima_ejecucion: None,
+                                            veces_ejecutado: 0,
+                                            bloqueado: true,
+                                            creado_en: Local::now().to_rfc3339(),
+                                        });
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    games
+}
+
+#[tauri::command]
+fn detect_steam_games() -> Result<Vec<AppBloqueada>, String> {
+    Ok(detect_steam_games_internal())
 }
 
 fn extract_steam_field(content: &str, field: &str) -> Option<String> {
@@ -261,6 +409,136 @@ fn compute_file_hash(path: &str) -> Result<String, String> {
     hasher.update(&data);
     let result = hasher.finalize();
     Ok(format!("{:x}", result))
+}
+
+#[cfg(windows)]
+fn extract_icon_as_base64(exe_path: &str) -> Option<String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use base64::Engine;
+    
+    let path_wide: Vec<u16> = OsStr::new(exe_path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    
+    let mut file_info: windows::Win32::UI::Shell::SHFILEINFOW = unsafe { std::mem::zeroed() };
+    
+    let result = unsafe { 
+        windows::Win32::UI::Shell::SHGetFileInfoW(
+            path_wide.as_ptr(),
+            0,
+            &mut file_info,
+            std::mem::size_of::<windows::Win32::UI::Shell::SHFILEINFOW>() as u32,
+            windows::Win32::UI::Shell::SHGFI_ICON | windows::Win32::UI::Shell::SHGFI_SMALLICON | windows::Win32::UI::Shell::SHGFI_PIDL,
+        )
+    };
+    
+    if result.1 == 0 {
+        return None;
+    }
+    
+    let h_icon = file_info.hIcon;
+    
+    if h_icon.0.is_null() {
+        return None;
+    }
+    
+    let icon_info = unsafe {
+        let mut info: windows::Win32::UI::WindowsAndMessaging::ICONINFO = std::mem::zeroed();
+        if windows::Win32::UI::WindowsAndMessaging::GetIconInfo(h_icon, &mut info) {
+            Some(info)
+        } else {
+            None
+        }
+    };
+    
+    let bitmap_bits = if let Some(info) = icon_info {
+        if !info.hbmColor.is_null() {
+            let bits = get_icon_bits(info.hbmColor);
+            unsafe {
+                let _ = windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(info.hbmColor.0));
+                if !info.hbmMask.is_null() {
+                    let _ = windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(info.hbmMask.0));
+                }
+            }
+            bits
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(h_icon);
+    }
+    
+    bitmap_bits.map(|bits| base64::engine::general_purpose::STANDARD.encode(&bits))
+}
+
+#[cfg(windows)]
+fn get_icon_bits(h_bitmap: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<Vec<u8>> {
+    use windows::Win32::Graphics::Gdi::{GetObjectW, GetDIBits, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS};
+    use windows::Win32::Foundation::BITMAPINFOHEADER;
+    
+    let mut bm: BITMAP = unsafe { std::mem::zeroed() };
+    
+    let size = unsafe { GetObjectW(h_bitmap, std::mem::size_of::<BITMAP>() as i32, &mut bm as *mut _ as *mut std::ffi::c_void) };
+    
+    if size == 0 {
+        return None;
+    }
+    
+    let width = bm.bmWidth as usize;
+    let height = bm.bmHeight as usize;
+    let planes = bm.bmPlanes as usize;
+    let bits_per_pixel = bm.bmBitsPixel as usize;
+    
+    let mut bmi: BITMAPINFO = unsafe { std::mem::zeroed() };
+    bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    bmi.bmiHeader.biWidth = bm.bmWidth;
+    bmi.bmiHeader.biHeight = -bm.bmHeight as i32;
+    bmi.bmiHeader.biPlanes = bm.bmPlanes;
+    bmi.bmiHeader.biBitCount = bm.bmBitsPixel;
+    bmi.bmiHeader.biCompression = windows::Win32::Graphics::Gdi::BI_RGB.0 as u32;
+    
+    let mut buffer: Vec<u8> = vec![0u8; width * height * 4];
+    
+    let lines = unsafe {
+        GetDIBits(
+            None,
+            h_bitmap,
+            0,
+            height as u32,
+            Some(buffer.as_mut_ptr() as *mut std::ffi::c_void),
+            &mut bmi,
+            DIB_RGB_COLORS,
+        )
+    };
+    
+    if lines == 0 {
+        return None;
+    }
+    
+    let mut rgba_buffer = Vec::with_capacity(width * height * 4);
+    
+    for i in 0..(width * height) {
+        let b = buffer[i * 3];
+        let g = buffer[i * 3 + 1];
+        let r = buffer[i * 3 + 2];
+        rgba_buffer.push(r);
+        rgba_buffer.push(g);
+        rgba_buffer.push(b);
+        rgba_buffer.push(255);
+    }
+    
+    Some(rgba_buffer)
+}
+
+#[cfg(not(windows))]
+fn extract_icon_as_base64(_exe_path: &str) -> Option<String> {
+    None
 }
 
 #[tauri::command]
@@ -373,36 +651,60 @@ fn set_autostart(enabled: bool) -> Result<bool, String> {
             .to_string_lossy()
             .to_string();
 
-        let key_path = r"Software\Microsoft\Windows\CurrentVersion\Run";
-
+        let task_name = "CuidaTuFocus_AutoStart";
+        
         if enabled {
-            let output = Command::new("reg")
-                .args(&[
-                    "add",
-                    &format!(r"HKCU\{}", key_path),
-                    "/v",
-                    "CuidaTuFocus",
-                    "/t",
-                    "REG_SZ",
-                    "/d",
-                    &exe_path,
-                    "/f",
-                ])
+            let task_xml = format!(
+                r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Actions>
+    <Exec>
+      <Command>{}</Command>
+      <Arguments>--minimized</Arguments>
+    </Exec>
+  </Actions>
+  <Settings>
+    <Hidden>true</Hidden>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+  </Settings>
+</Task>"#,
+                exe_path.replace("\\", "\\\\")
+            );
+            
+            let temp_file = std::env::temp_dir().join("cuidatufocus_task.xml");
+            std::fs::write(&temp_file, task_xml).map_err(|e| e.to_string())?;
+            
+            let output = Command::new("schtasks")
+                .args(&["/Create", "/TN", task_name, "/XML", &temp_file.to_string_lossy(), "/F"])
                 .output();
 
+            let _ = std::fs::remove_file(temp_file);
+            
             if output.is_err() {
-                return Err("Failed to set autostart".to_string());
+                return Err("Failed to create scheduled task".to_string());
+            }
+            
+            if let Ok(out) = output {
+                if !out.status.success() {
+                    return Err(format!("Failed to create scheduled task: {:?}", String::from_utf8_lossy(&out.stderr)));
+                }
             }
         } else {
-            let _output = Command::new("reg")
-                .args(&[
-                    "delete",
-                    &format!(r"HKCU\{}", key_path),
-                    "/v",
-                    "CuidaTuFocus",
-                    "/f",
-                ])
+            let output = Command::new("schtasks")
+                .args(&["/Delete", "/TN", task_name, "/F"])
                 .output();
+                
+            if let Ok(out) = output {
+                log::info!("Delete task result: {:?}", String::from_utf8_lossy(&out.stdout));
+            }
         }
     }
 
@@ -420,6 +722,15 @@ fn minimize_to_tray(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn quit_app(app: AppHandle) -> Result<(), String> {
     app.exit(0);
+    Ok(())
+}
+
+#[tauri::command]
+fn show_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -576,7 +887,7 @@ fn check_and_block_processes(app: &AppHandle, state: &State<AppState>) {
                             let _ = send_notification(app, "Bloqueado", &format!("Demasiados intentos con {}. Bloqueado por 5 minutos.", app_nombre), &app_nombre, "STRICT");
                             log::info!("Cooldown activado para: {}", app_nombre);
                         } else {
-                            let _ = send_notification(app, "Bloqueado", &format!("No podés abrir {} ahora.", app_nombre), &app_nombre, "STRICT");
+                            let _ = send_notification(app, "Bloqueado", &format!("No podés abrir {}.", app_nombre), &app_nombre, "STRICT");
                         }
                         log::info!("Bloqueado (STRICT): {} (PID: {}), intentos: {}", app_nombre, pid_u32, entry.0);
                     }
@@ -633,6 +944,52 @@ fn start_monitor(app: AppHandle, state: State<AppState>) {
     });
 }
 
+fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let open_item = MenuItem::with_id(app, "open", "Abrir CuidaTuFocus", true, None::<&str>)?;
+    let pause_15_item = MenuItem::with_id(app, "pause_15", "Pausar 15 min", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
+    
+    let menu = Menu::with_items(app, &[&open_item, &pause_15_item, &quit_item])?;
+    
+    let _tray = TrayIconBuilder::new()
+        .icon(app.default_window_icon().unwrap().clone())
+        .menu(&menu)
+        .tooltip("CuidaTuFocus - Protegido")
+        .on_menu_event(|app, event| {
+            match event.id.as_ref() {
+                "open" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+                "pause_15" => {
+                    let state = app.state::<AppState>();
+                    if let Ok(mut paused_until) = state.paused_until.lock() {
+                        let until = Local::now() + chrono::Duration::minutes(15);
+                        *paused_until = Some(until.to_rfc3339());
+                    }
+                }
+                "quit" => {
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let tauri::tray::TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                let app = tray.app_handle();
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        })
+        .build(app)?;
+    
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -654,6 +1011,11 @@ pub fn run() {
         .setup(|app| {
             let state = app.state::<AppState>();
             start_monitor(app.handle().clone(), state);
+            
+            if let Err(e) = setup_tray(app.handle()) {
+                log::error!("Failed to setup tray: {}", e);
+            }
+            
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -667,6 +1029,7 @@ pub fn run() {
             remove_app_bloqueada,
             toggle_app_bloqueada,
             detect_steam_games,
+            detect_all_games,
             get_running_processes,
             get_estado_proteccion,
             toggle_proteccion,
@@ -677,6 +1040,7 @@ pub fn run() {
             set_autostart,
             minimize_to_tray,
             quit_app,
+            show_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

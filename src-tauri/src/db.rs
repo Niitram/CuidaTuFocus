@@ -240,20 +240,25 @@ impl Database {
         rows.collect()
     }
 
-    pub fn add_app_bloqueada(&self, app: NuevaApp, hash: Option<String>) -> Result<AppBloqueada> {
+    pub fn add_app_bloqueada(
+        &self,
+        app: NuevaApp,
+        hash: Option<String>,
+        icono: Option<String>,
+    ) -> Result<AppBloqueada> {
         let id = Uuid::new_v4().to_string();
         let now = Local::now().to_rfc3339();
 
         self.conn.execute(
             "INSERT INTO apps_bloqueadas (id, nombre, ruta_ejecutable, icono, hash_sha256, categoria, ultima_ejecucion, veces_ejecutado, bloqueado, creado_en) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![&id, &app.nombre, &app.ruta_ejecutable, Option::<String>::None, &hash, &app.categoria, Option::<String>::None, 0, true, &now]
+            params![&id, &app.nombre, &app.ruta_ejecutable, &icono, &hash, &app.categoria, Option::<String>::None, 0, true, &now]
         )?;
 
         Ok(AppBloqueada {
             id,
             nombre: app.nombre,
             ruta_ejecutable: app.ruta_ejecutable,
-            icono: None,
+            icono,
             hash_sha256: hash,
             categoria: app.categoria,
             ultima_ejecucion: None,
