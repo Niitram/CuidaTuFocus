@@ -1,10 +1,14 @@
-use chrono::{Datelike, Duration, Local, Weekday};
-use rusqlite::{params, Connection};
+use chrono::{Local, NaiveTime, Datelike};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use sha2::{Sha256, Digest};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 use sysinfo::System;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
+use tokio::time::interval;
 use uuid::Uuid;
 
 mod db;
@@ -31,6 +35,7 @@ pub struct AppBloqueada {
     pub nombre: String,
     pub ruta_ejecutable: String,
     pub icono: Option<String>,
+    pub hash_sha256: Option<String>,
     pub categoria: String,
     pub ultima_ejecucion: Option<String>,
     pub veces_ejecutado: i32,
@@ -104,11 +109,22 @@ pub struct NuevaApp {
     pub categoria: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationPayload {
+    pub title: String,
+    pub body: String,
+    pub app_nombre: String,
+    pub modo: String,
+}
+
 pub struct AppState {
     pub db: Mutex<Database>,
     pub proteccion_activa: Mutex<bool>,
     pub modo_bloqueo: Mutex<String>,
     pub password_hash: Mutex<Option<String>>,
+    pub paused_until: Mutex<Option<String>>,
+    pub intento_cooldown: Mutex<HashMap<String, (u32, std::time::Instant)>>,
 }
 
 #[tauri::command]
@@ -150,7 +166,10 @@ fn get_apps_bloqueadas(state: State<AppState>) -> Result<Vec<AppBloqueada>, Stri
 #[tauri::command]
 fn add_app_bloqueada(state: State<AppState>, app: NuevaApp) -> Result<AppBloqueada, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.add_app_bloqueada(app).map_err(|e| e.to_string())
+    
+    let hash = compute_file_hash(&app.ruta_ejecutable).ok();
+    
+    db.add_app_bloqueada(app, hash).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -195,11 +214,14 @@ fn detect_steam_games() -> Result<Vec<AppBloqueada>, String> {
                                 let exe_path = common_path.join(format!("{}.exe", &install_dir));
 
                                 if exe_path.exists() {
+                                    let hash = compute_file_hash(&exe_path.to_string_lossy()).ok();
+                                    
                                     games.push(AppBloqueada {
                                         id: Uuid::new_v4().to_string(),
                                         nombre,
                                         ruta_ejecutable: exe_path.to_string_lossy().to_string(),
                                         icono: None,
+                                        hash_sha256: hash,
                                         categoria: "STEAM".to_string(),
                                         ultima_ejecucion: None,
                                         veces_ejecutado: 0,
@@ -233,6 +255,14 @@ fn extract_steam_field(content: &str, field: &str) -> Option<String> {
     None
 }
 
+fn compute_file_hash(path: &str) -> Result<String, String> {
+    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    let result = hasher.finalize();
+    Ok(format!("{:x}", result))
+}
+
 #[tauri::command]
 fn get_running_processes() -> Result<Vec<ProcessInfo>, String> {
     let mut system = System::new();
@@ -262,12 +292,13 @@ fn get_running_processes() -> Result<Vec<ProcessInfo>, String> {
 fn get_estado_proteccion(state: State<AppState>) -> Result<EstadoProteccion, String> {
     let proteccion_activa = state.proteccion_activa.lock().map_err(|e| e.to_string())?;
     let modo_bloqueo = state.modo_bloqueo.lock().map_err(|e| e.to_string())?;
+    let paused_until = state.paused_until.lock().map_err(|e| e.to_string())?;
 
     Ok(EstadoProteccion {
         activa: *proteccion_activa,
         modo_bloqueo: modo_bloqueo.clone(),
         desde: None,
-        hasta: None,
+        hasta: paused_until.clone(),
         focus_extremo: false,
     })
 }
@@ -309,6 +340,9 @@ fn pause_proteccion(
 
     if let Some(ref stored_hash) = *password_hash {
         if verify_password(&password, stored_hash) {
+            let mut paused_until = state.paused_until.lock().map_err(|e| e.to_string())?;
+            let until = Local::now() + chrono::Duration::minutes(minutes as i64);
+            *paused_until = Some(until.to_rfc3339());
             return Ok(true);
         }
     }
@@ -360,7 +394,7 @@ fn set_autostart(enabled: bool) -> Result<bool, String> {
                 return Err("Failed to set autostart".to_string());
             }
         } else {
-            let output = Command::new("reg")
+            let _output = Command::new("reg")
                 .args(&[
                     "delete",
                     &format!(r"HKCU\{}", key_path),
@@ -375,21 +409,252 @@ fn set_autostart(enabled: bool) -> Result<bool, String> {
     Ok(true)
 }
 
+#[tauri::command]
+fn minimize_to_tray(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) -> Result<(), String> {
+    app.exit(0);
+    Ok(())
+}
+
 fn verify_password(password: &str, hash: &str) -> bool {
     bcrypt::verify(password, hash).unwrap_or(false)
 }
 
+fn should_block_now(state: &State<AppState>) -> bool {
+    let proteccion_activa = state.proteccion_activa.lock().unwrap();
+    if !*proteccion_activa {
+        return false;
+    }
+    
+    if let Ok(paused_until) = state.paused_until.lock() {
+        if let Some(until_str) = paused_until.as_ref() {
+            if let Ok(until) = chrono::DateTime::parse_from_rfc3339(until_str) {
+                if until > chrono::Local::now() {
+                    return false;
+                }
+            }
+        }
+    }
+    
+    true
+}
+
+fn get_current_horario_tipo(state: &State<AppState>) -> Option<String> {
+    let db = match state.db.lock() {
+        Ok(db) => db,
+        Err(_) => return None,
+    };
+    
+    let horarios = match db.get_horarios() {
+        Ok(h) => h,
+        Err(_) => return None,
+    };
+    
+    let now = Local::now();
+    let current_time = NaiveTime::from_hms_opt(now.hour() as u32, now.minute() as u32, 0)?;
+    let dias_semana = ["DOMINGO", "LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO"];
+    let dia_actual = dias_semana[now.weekday().num_days_from_sunday() as usize];
+    
+    for horario in horarios {
+        if !horario.activo {
+            continue;
+        }
+        if !horario.dias.contains(&dia_actual.to_string()) {
+            continue;
+        }
+        
+        let inicio = NaiveTime::parse_from_str(&horario.hora_inicio, "%H:%M").ok()?;
+        let fin = NaiveTime::parse_from_str(&horario.hora_fin, "%H:%M").ok()?;
+        
+        if horario.hora_inicio <= horario.hora_fin {
+            if current_time >= inicio && current_time < fin {
+                return Some(horario.tipo);
+            }
+        } else {
+            if current_time >= inicio || current_time < fin {
+                return Some(horario.tipo);
+            }
+        }
+    }
+    
+    None
+}
+
+fn check_and_block_processes(app: &AppHandle, state: &State<AppState>) {
+    if !should_block_now(state) {
+        return;
+    }
+    
+    let horario_tipo = match get_current_horario_tipo(state) {
+        Some(t) => t,
+        None => return,
+    };
+    
+    if horario_tipo != "BLOQUEADO" {
+        return;
+    }
+    
+    let modo = match state.modo_bloqueo.lock() {
+        Ok(m) => m.clone(),
+        Err(_) => return,
+    };
+    
+    let db = match state.db.lock() {
+        Ok(db) => db,
+        Err(_) => return,
+    };
+    
+    let apps = match db.get_apps_bloqueadas() {
+        Ok(apps) => apps,
+        Err(_) => return,
+    };
+    
+    let mut system = System::new();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    
+    for (pid, process) in system.processes() {
+        let Some(exe_path) = process.exe() else { continue; };
+        let exe_name = process.name();
+        let exe_name_str = exe_name.to_string_lossy().to_lowercase();
+        let exe_path_str = exe_path.to_string_lossy().to_lowercase();
+        
+        for app_blocked in &apps {
+            if !app_blocked.bloqueado {
+                continue;
+            }
+            
+            let blocked_name = app_blocked.nombre.to_lowercase();
+            let blocked_path = app_blocked.ruta_ejecutable.to_lowercase();
+            
+            let matches = exe_name_str.contains(&blocked_name) 
+                || exe_path_str.contains(&blocked_name)
+                || exe_path_str == blocked_path
+                || exe_path_str.contains(&blocked_path.replace("\\", "/"));
+            
+            if matches {
+                let app_nombre = app_blocked.nombre.clone();
+                let app_id = app_blocked.id.clone();
+                let pid_u32 = pid.as_u32();
+                
+                match modo.as_str() {
+                    "SOFT" => {
+                        let _ = terminate_process(pid_u32);
+                        let _ = db.record_event(&app_id, "BLOQUEO", "SOFT", 0);
+                        log::info!("Bloqueado (SOFT): {} (PID: {})", app_nombre, pid_u32);
+                    }
+                    "MEDIUM" => {
+                        let _ = terminate_process(pid_u32);
+                        let _ = db.record_event(&app_id, "BLOQUEO", "MEDIUM", 0);
+                        let _ = send_notification(app, "¡Espera!", &format!("No podés abrir {} ahora. Se cerrará en 5 segundos.", app_nombre), &app_nombre, "MEDIUM");
+                        log::info!("Bloqueado (MEDIUM): {} (PID: {})", app_nombre, pid_u32);
+                    }
+                    "STRICT" => {
+                        let mut cooldown = match state.intento_cooldown.lock() {
+                            Ok(c) => c,
+                            Err(_) => continue,
+                        };
+                        
+                        let entry = cooldown.entry(app_id.clone()).or_insert((0, std::time::Instant::now()));
+                        
+                        if entry.1.elapsed() > std::time::Duration::from_secs(60) {
+                            *entry = (0, std::time::Instant::now());
+                        }
+                        
+                        entry.0 += 1;
+                        
+                        let _ = terminate_process(pid_u32);
+                        let _ = db.record_event(&app_id, "INTENTO_BLOQUEO", "STRICT", 0);
+                        
+                        if entry.0 >= 3 {
+                            let _ = send_notification(app, "Bloqueado", &format!("Demasiados intentos con {}. Bloqueado por 5 minutos.", app_nombre), &app_nombre, "STRICT");
+                            log::info!("Cooldown activado para: {}", app_nombre);
+                        } else {
+                            let _ = send_notification(app, "Bloqueado", &format!("No podés abrir {} ahora.", app_nombre), &app_nombre, "STRICT");
+                        }
+                        log::info!("Bloqueado (STRICT): {} (PID: {}), intentos: {}", app_nombre, pid_u32, entry.0);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn terminate_process(pid: u32) -> Result<(), String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE, false, pid).map_err(|e| e.to_string())?;
+        let _ = TerminateProcess(handle, 1);
+        let _ = CloseHandle(handle);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn terminate_process(_pid: u32) -> Result<(), String> {
+    Ok(())
+}
+
+fn send_notification(app: &AppHandle, title: &str, body: &str, app_nombre: &str, modo: &str) -> Result<(), String> {
+    let payload = NotificationPayload {
+        title: title.to_string(),
+        body: body.to_string(),
+        app_nombre: app_nombre.to_string(),
+        modo: modo.to_string(),
+    };
+    
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.emit("bloqueo-event", payload);
+    }
+    
+    Ok(())
+}
+
+fn start_monitor(app: AppHandle, state: State<AppState>) {
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut timer = interval(Duration::from_secs(2));
+            loop {
+                timer.tick().await;
+                check_and_block_processes(&app, &state);
+            }
+        });
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    env_logger::init();
+    
     let db = Database::new().expect("Failed to initialize database");
+    
+    let state = AppState {
+        db: Mutex::new(db),
+        proteccion_activa: Mutex::new(true),
+        modo_bloqueo: Mutex::new("MEDIUM".to_string()),
+        password_hash: Mutex::new(None),
+        paused_until: Mutex::new(None),
+        intento_cooldown: Mutex::new(HashMap::new()),
+    };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState {
-            db: Mutex::new(db),
-            proteccion_activa: Mutex::new(true),
-            modo_bloqueo: Mutex::new("MEDIUM".to_string()),
-            password_hash: Mutex::new(None),
+        .manage(state)
+        .setup(|app| {
+            let state = app.state::<AppState>();
+            start_monitor(app.handle().clone(), state);
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_horarios,
@@ -410,6 +675,8 @@ pub fn run() {
             get_estadisticas,
             get_historial,
             set_autostart,
+            minimize_to_tray,
+            quit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

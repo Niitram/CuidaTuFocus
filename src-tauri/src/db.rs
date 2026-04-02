@@ -44,6 +44,7 @@ impl Database {
                 nombre TEXT NOT NULL,
                 ruta_ejecutable TEXT NOT NULL UNIQUE,
                 icono TEXT,
+                hash_sha256 TEXT,
                 categoria TEXT NOT NULL,
                 ultima_ejecucion TEXT,
                 veces_ejecutado INTEGER NOT NULL DEFAULT 0,
@@ -87,7 +88,7 @@ impl Database {
             self.conn.execute(
                 "INSERT INTO horarios (id, nombre, tipo, hora_inicio, hora_fin, dias, activo, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
-                    uuid::Uuid::new_v4().to_string(),
+                    Uuid::new_v4().to_string(),
                     "Horario laboral",
                     "BLOQUEADO",
                     "08:00",
@@ -102,11 +103,11 @@ impl Database {
             self.conn.execute(
                 "INSERT INTO horarios (id, nombre, tipo, hora_inicio, hora_fin, dias, activo, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
-                    uuid::Uuid::new_v4().to_string(),
+                    Uuid::new_v4().to_string(),
                     "Tiempo libre",
                     "PERMITIDO",
                     "18:00",
-                    "23:00",
+                    "00:00",
                     "[\"LUNES\",\"MARTES\",\"MIERCOLES\",\"JUEVES\",\"VIERNES\"]",
                     true,
                     &now,
@@ -218,7 +219,7 @@ impl Database {
 
     pub fn get_apps_bloqueadas(&self) -> Result<Vec<AppBloqueada>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, nombre, ruta_ejecutable, icono, categoria, ultima_ejecucion, veces_ejecutado, bloqueado, creado_en FROM apps_bloqueadas ORDER BY nombre"
+            "SELECT id, nombre, ruta_ejecutable, icono, hash_sha256, categoria, ultima_ejecucion, veces_ejecutado, bloqueado, creado_en FROM apps_bloqueadas ORDER BY nombre"
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -227,24 +228,25 @@ impl Database {
                 nombre: row.get(1)?,
                 ruta_ejecutable: row.get(2)?,
                 icono: row.get(3)?,
-                categoria: row.get(4)?,
-                ultima_ejecucion: row.get(5)?,
-                veces_ejecutado: row.get(6)?,
-                bloqueado: row.get::<_, i32>(7)? == 1,
-                creado_en: row.get(8)?,
+                hash_sha256: row.get(4)?,
+                categoria: row.get(5)?,
+                ultima_ejecucion: row.get(6)?,
+                veces_ejecutado: row.get(7)?,
+                bloqueado: row.get::<_, i32>(8)? == 1,
+                creado_en: row.get(9)?,
             })
         })?;
 
         rows.collect()
     }
 
-    pub fn add_app_bloqueada(&self, app: NuevaApp) -> Result<AppBloqueada> {
+    pub fn add_app_bloqueada(&self, app: NuevaApp, hash: Option<String>) -> Result<AppBloqueada> {
         let id = Uuid::new_v4().to_string();
         let now = Local::now().to_rfc3339();
 
         self.conn.execute(
-            "INSERT INTO apps_bloqueadas (id, nombre, ruta_ejecutable, icono, categoria, ultima_ejecucion, veces_ejecutado, bloqueado, creado_en) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![&id, &app.nombre, &app.ruta_ejecutable, Option::<String>::None, &app.categoria, Option::<String>::None, 0, true, &now]
+            "INSERT INTO apps_bloqueadas (id, nombre, ruta_ejecutable, icono, hash_sha256, categoria, ultima_ejecucion, veces_ejecutado, bloqueado, creado_en) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![&id, &app.nombre, &app.ruta_ejecutable, Option::<String>::None, &hash, &app.categoria, Option::<String>::None, 0, true, &now]
         )?;
 
         Ok(AppBloqueada {
@@ -252,6 +254,7 @@ impl Database {
             nombre: app.nombre,
             ruta_ejecutable: app.ruta_ejecutable,
             icono: None,
+            hash_sha256: hash,
             categoria: app.categoria,
             ultima_ejecucion: None,
             veces_ejecutado: 0,
@@ -274,7 +277,7 @@ impl Database {
         )?;
 
         let mut stmt = self.conn.prepare(
-            "SELECT id, nombre, ruta_ejecutable, icono, categoria, ultima_ejecucion, veces_ejecutado, bloqueado, creado_en FROM apps_bloqueadas WHERE id = ?1"
+            "SELECT id, nombre, ruta_ejecutable, icono, hash_sha256, categoria, ultima_ejecucion, veces_ejecutado, bloqueado, creado_en FROM apps_bloqueadas WHERE id = ?1"
         )?;
 
         stmt.query_row(params![id], |row| {
@@ -283,13 +286,41 @@ impl Database {
                 nombre: row.get(1)?,
                 ruta_ejecutable: row.get(2)?,
                 icono: row.get(3)?,
-                categoria: row.get(4)?,
-                ultima_ejecucion: row.get(5)?,
-                veces_ejecutado: row.get(6)?,
-                bloqueado: row.get::<_, i32>(7)? == 1,
-                creado_en: row.get(8)?,
+                hash_sha256: row.get(4)?,
+                categoria: row.get(5)?,
+                ultima_ejecucion: row.get(6)?,
+                veces_ejecutado: row.get(7)?,
+                bloqueado: row.get::<_, i32>(8)? == 1,
+                creado_en: row.get(9)?,
             })
         })
+    }
+
+    pub fn record_event(
+        &self,
+        app_id: &str,
+        tipo_evento: &str,
+        modo_bloqueo: &str,
+        duracion_ms: i64,
+    ) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+        let now = Local::now().to_rfc3339();
+
+        let app_nombre: String = self
+            .conn
+            .query_row(
+                "SELECT nombre FROM apps_bloqueadas WHERE id = ?1",
+                params![app_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "Unknown".to_string());
+
+        self.conn.execute(
+            "INSERT INTO historial (id, app_id, app_nombre, tipo_evento, timestamp, modo_bloqueo, duracion_proceso_ms, detalles) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![&id, app_id, &app_nombre, tipo_evento, &now, modo_bloqueo, duracion_ms, "{}"]
+        )?;
+
+        Ok(())
     }
 
     pub fn get_estadisticas(&self) -> Result<Estadisticas> {

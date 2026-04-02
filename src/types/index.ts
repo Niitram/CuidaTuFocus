@@ -17,11 +17,19 @@ export interface AppBloqueada {
   nombre: string;
   ruta_ejecutable: string;
   icono: string | null;
+  hash_sha256: string | null;
   categoria: 'STEAM' | 'EPIC' | 'GOG' | 'MANUAL' | 'DETECTADO';
   ultima_ejecucion: string | null;
   veces_ejecutado: number;
   bloqueado: boolean;
   creado_en: string;
+}
+
+export interface NotificationPayload {
+  title: string;
+  body: string;
+  app_nombre: string;
+  modo: ModoBloqueo;
 }
 
 export type ModoBloqueo = 'SOFT' | 'MEDIUM' | 'STRICT';
