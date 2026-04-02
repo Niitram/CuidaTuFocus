@@ -1,10 +1,12 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
-import type { Horario, AppBloqueada, ModoBloqueo, EstadoProteccion, Estadisticas, EventoHistorial, ProcessInfo, NuevaApp, NuevoHorario } from '../types';
+import type { Horario, AppBloqueada, ModoBloqueo, EstadoProteccion, Estadisticas, EventoHistorial, ProcessInfo, NuevaApp, NuevoHorario, GrupoHorario, NuevoGrupoHorario, AppConHorarios } from '../types';
 
 interface AppState {
   horarios: Horario[];
+  gruposHorarios: GrupoHorario[];
   appsBloqueadas: AppBloqueada[];
+  appsConHorarios: AppConHorarios[];
   estadoProteccion: EstadoProteccion;
   estadisticas: Estadisticas;
   historialReciente: EventoHistorial[];
@@ -19,7 +21,16 @@ interface AppState {
   eliminarHorario: (id: string) => Promise<void>;
   toggleHorario: (id: string) => Promise<void>;
   
+  cargarGruposHorarios: () => Promise<void>;
+  crearGrupoHorario: (grupo: NuevoGrupoHorario) => Promise<void>;
+  actualizarGrupoHorario: (id: string, grupo: Partial<GrupoHorario>) => Promise<void>;
+  eliminarGrupoHorario: (id: string) => Promise<void>;
+  toggleGrupoHorario: (id: string) => Promise<void>;
+  assignAppToGrupo: (appId: string, grupoId: string) => Promise<void>;
+  removeAppFromGrupo: (appId: string, grupoId: string) => Promise<void>;
+  
   cargarApps: () => Promise<void>;
+  cargarAppsConHorarios: () => Promise<void>;
   agregarApp: (app: NuevaApp) => Promise<void>;
   eliminarApp: (id: string) => Promise<void>;
   toggleApp: (id: string) => Promise<void>;
@@ -41,7 +52,9 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set, get) => ({
   horarios: [],
+  gruposHorarios: [],
   appsBloqueadas: [],
+  appsConHorarios: [],
   estadoProteccion: { activa: false, modo_bloqueo: 'MEDIUM', desde: null, hasta: null, focus_extremo: false },
   estadisticas: { bloqueos_hoy: 0, bloqueos_semana: 0, racha_dias: 0, app_mas_tentacion: null },
   historialReciente: [],
@@ -94,7 +107,83 @@ export const useAppStore = create<AppState>((set, get) => ({
       await get().cargarHorarios();
     } catch (e) {
       console.error('Error toggling horario:', e);
+    }
+  },
+
+  cargarGruposHorarios: async () => {
+    try {
+      const gruposHorarios = await invoke<GrupoHorario[]>('get_grupos_horarios');
+      set({ gruposHorarios });
+    } catch (e) {
+      console.error('Error cargando grupos de horarios:', e);
+    }
+  },
+
+  crearGrupoHorario: async (grupo) => {
+    try {
+      await invoke('create_grupo_horario', { grupo });
+      await get().cargarGruposHorarios();
+    } catch (e) {
+      console.error('Error creando grupo de horarios:', e);
       throw e;
+    }
+  },
+
+  actualizarGrupoHorario: async (id, grupo) => {
+    try {
+      await invoke('update_grupo_horario', { id, grupo });
+      await get().cargarGruposHorarios();
+    } catch (e) {
+      console.error('Error actualizando grupo de horarios:', e);
+      throw e;
+    }
+  },
+
+  eliminarGrupoHorario: async (id) => {
+    try {
+      await invoke('delete_grupo_horario', { id });
+      await get().cargarGruposHorarios();
+    } catch (e) {
+      console.error('Error eliminando grupo de horarios:', e);
+      throw e;
+    }
+  },
+
+  toggleGrupoHorario: async (id) => {
+    try {
+      await invoke('toggle_grupo_horario', { id });
+      await get().cargarGruposHorarios();
+    } catch (e) {
+      console.error('Error toggling grupo de horarios:', e);
+    }
+  },
+
+  assignAppToGrupo: async (appId, grupoId) => {
+    try {
+      await invoke('assign_app_to_grupo', { appId, grupoId });
+      await get().cargarGruposHorarios();
+    } catch (e) {
+      console.error('Error asignando app a grupo:', e);
+      throw e;
+    }
+  },
+
+  removeAppFromGrupo: async (appId, grupoId) => {
+    try {
+      await invoke('remove_app_from_grupo', { appId, grupoId });
+      await get().cargarGruposHorarios();
+    } catch (e) {
+      console.error('Error removiendo app de grupo:', e);
+      throw e;
+    }
+  },
+
+  cargarAppsConHorarios: async () => {
+    try {
+      const appsConHorarios = await invoke<AppConHorarios[]>('get_apps_with_grupos');
+      set({ appsConHorarios });
+    } catch (e) {
+      console.error('Error cargando apps con grupos:', e);
     }
   },
 

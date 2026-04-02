@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Plus, Gamepad2, Trash2, Search, Monitor, FolderOpen, RefreshCw, X } from 'lucide-react';
-import { Card, Button, Toggle } from '../components/ui';
+import { Plus, Gamepad2, Trash2, Search, Monitor, FolderOpen, RefreshCw, X, Layers, Clock } from 'lucide-react';
+import { Card, Button, Toggle, Badge } from '../components/ui';
 import { useAppStore } from '../stores/appStore';
-import type { AppBloqueada, ProcessInfo, NuevaApp } from '../types';
+import type { AppBloqueada, ProcessInfo, NuevaApp, GrupoHorario } from '../types';
 
 const CATEGORIAS_MAP = {
   STEAM: { label: 'Steam', color: 'bg-[#1b9ed8]/20 text-[#1b9ed8]' },
@@ -13,14 +13,18 @@ const CATEGORIAS_MAP = {
 };
 
 export function Apps() {
-  const { appsBloqueadas, cargarApps, agregarApp, eliminarApp, toggleApp, detectarSteamGames, getRunningProcesses } = useAppStore();
+  const { appsBloqueadas, gruposHorarios, horarios, cargarApps, agregarApp, eliminarApp, toggleApp, detectarSteamGames, getRunningProcesses, cargarGruposHorarios, cargarHorarios, assignAppToGrupo, removeAppFromGrupo } = useAppStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [loadingSteam, setLoadingSteam] = useState(false);
   const [steamGames, setSteamGames] = useState<AppBloqueada[]>([]);
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const [selectedApp, setSelectedApp] = useState<AppBloqueada | null>(null);
 
   useEffect(() => {
     cargarApps();
+    cargarGruposHorarios();
+    cargarHorarios();
   }, []);
 
   const filteredApps = appsBloqueadas.filter(app => 
@@ -45,12 +49,30 @@ export function Apps() {
     }
   };
 
+  const handleOpenAssignModal = (app: AppBloqueada) => {
+    setSelectedApp(app);
+    setShowAssignModal(true);
+  };
+
+  const getAppGrupos = (appId: string): GrupoHorario[] => {
+    return gruposHorarios.filter(g => g.appsIds.includes(appId));
+  };
+
+  const handleToggleGrupoForApp = async (appId: string, grupoId: string, isAssigned: boolean) => {
+    if (isAssigned) {
+      await removeAppFromGrupo(appId, grupoId);
+    } else {
+      await assignAppToGrupo(appId, grupoId);
+    }
+    await cargarGruposHorarios();
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-[var(--color-text-primary)]">Apps Bloqueadas</h1>
-          <p className="text-[var(--color-text-secondary)]">Gestiona los juegos que querés bloquear</p>
+          <p className="text-[var(--color-text-secondary)]">Gestiona los juegos que querés bloquear y sus horarios</p>
         </div>
         <Button onClick={() => setShowAddModal(true)}>
           <Plus size={18} />
@@ -76,47 +98,84 @@ export function Apps() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {filteredApps.map((app) => (
-          <Card key={app.id} className="relative">
-            <div className="absolute top-4 right-4">
-              <Toggle
-                checked={app.bloqueado}
-                onChange={() => toggleApp(app.id)}
-              />
-            </div>
-
-            <div className="flex items-start gap-4">
-              <div className="w-14 h-14 rounded-[var(--radius-md)] bg-[var(--color-accent-primary)]/20 flex items-center justify-center overflow-hidden">
-                {app.icono ? (
-                  <img src={app.icono} alt={app.nombre} className="w-10 h-10 object-contain" />
-                ) : (
-                  <Gamepad2 size={28} className="text-[var(--color-accent-primary)]" />
-                )}
+        {filteredApps.map((app) => {
+          const appGrupos = getAppGrupos(app.id);
+          
+          return (
+            <Card key={app.id} className="relative">
+              <div className="absolute top-4 right-4 flex items-center gap-2">
+                <Toggle
+                  checked={app.bloqueado}
+                  onChange={() => toggleApp(app.id)}
+                />
               </div>
-              <div className="flex-1 min-w-0">
-                <h3 className="font-semibold text-[var(--color-text-primary)] truncate">{app.nombre}</h3>
-                <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium mt-1 ${CATEGORIAS_MAP[app.categoria].color}`}>
-                  {CATEGORIAS_MAP[app.categoria].label}
-                </span>
-                {app.ultimaEjecucion && (
-                  <p className="text-xs text-[var(--color-text-muted)] mt-2">
-                    Ultima vez: {new Date(app.ultimaEjecucion).toLocaleDateString('es-ES')}
-                  </p>
-                )}
-              </div>
-            </div>
 
-            <div className="flex items-center gap-2 mt-4 pt-4 border-t border-white/5">
-              <button
-                onClick={() => eliminarApp(app.id)}
-                className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--color-text-muted)] hover:text-[var(--color-accent-danger)] hover:bg-[var(--color-accent-danger)]/10 transition-colors text-sm"
-              >
-                <Trash2 size={14} />
-                Eliminar
-              </button>
-            </div>
-          </Card>
-        ))}
+              <div className="flex items-start gap-4">
+                <div className="w-14 h-14 rounded-[var(--radius-md)] bg-[var(--color-accent-primary)]/20 flex items-center justify-center overflow-hidden">
+                  {app.icono ? (
+                    <img src={app.icono} alt={app.nombre} className="w-10 h-10 object-contain" />
+                  ) : (
+                    <Gamepad2 size={28} className="text-[var(--color-accent-primary)]" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="font-semibold text-[var(--color-text-primary)] truncate">{app.nombre}</h3>
+                  <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium mt-1 ${CATEGORIAS_MAP[app.categoria].color}`}>
+                    {CATEGORIAS_MAP[app.categoria].label}
+                  </span>
+                  {app.ultimaEjecucion && (
+                    <p className="text-xs text-[var(--color-text-muted)] mt-2">
+                      Ultima vez: {new Date(app.ultimaEjecucion).toLocaleDateString('es-ES')}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-4 pt-4 border-t border-white/5">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-1.5 text-sm text-[var(--color-text-secondary)]">
+                    <Layers size={14} />
+                    <span>Grupos: {appGrupos.length}</span>
+                  </div>
+                  <button
+                    onClick={() => handleOpenAssignModal(app)}
+                    className="text-xs text-[var(--color-accent-primary)] hover:underline"
+                  >
+                    Asignar
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {appGrupos.slice(0, 2).map((g) => (
+                    <Badge key={g.id} variant="default">{g.nombre}</Badge>
+                  ))}
+                  {appGrupos.length > 2 && (
+                    <Badge variant="default">+{appGrupos.length - 2}</Badge>
+                  )}
+                  {appGrupos.length === 0 && (
+                    <span className="text-xs text-[var(--color-text-muted)]">Sin grupos asignados</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 mt-4 pt-4 border-t border-white/5">
+                <button
+                  onClick={() => handleOpenAssignModal(app)}
+                  className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--color-text-muted)] hover:text-[var(--color-accent-primary)] hover:bg-[var(--color-accent-primary)]/10 transition-colors text-sm"
+                >
+                  <Layers size={14} />
+                  Horarios
+                </button>
+                <button
+                  onClick={() => eliminarApp(app.id)}
+                  className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--color-text-muted)] hover:text-[var(--color-accent-danger)] hover:bg-[var(--color-accent-danger)]/10 transition-colors text-sm"
+                >
+                  <Trash2 size={14} />
+                  Eliminar
+                </button>
+              </div>
+            </Card>
+          );
+        })}
       </div>
 
       {filteredApps.length === 0 && (
@@ -139,6 +198,16 @@ export function Apps() {
           onDetectSteam={() => handleDetectarSteam()}
           getProcesses={getRunningProcesses}
           initialStep={steamModalStep}
+        />
+      )}
+
+      {showAssignModal && selectedApp && (
+        <AssignGruposModal
+          app={selectedApp}
+          grupos={gruposHorarios}
+          horarios={horarios}
+          onClose={() => { setShowAssignModal(false); setSelectedApp(null); }}
+          onToggleGrupo={(grupoId, isAssigned) => handleToggleGrupoForApp(selectedApp.id, grupoId, isAssigned)}
         />
       )}
     </div>
@@ -324,6 +393,110 @@ function AddAppModal({ steamGames, onClose, onAdd, onDetectSteam, getProcesses, 
             </div>
           </div>
         )}
+      </Card>
+    </div>
+  );
+}
+
+interface AssignGruposModalProps {
+  app: AppBloqueada;
+  grupos: GrupoHorario[];
+  horarios: import('../types').Horario[];
+  onClose: () => void;
+  onToggleGrupo: (grupoId: string, isAssigned: boolean) => void;
+}
+
+function AssignGruposModal({ app, grupos, horarios, onClose, onToggleGrupo }: AssignGruposModalProps) {
+  const appGruposIds = grupos.filter(g => g.appsIds.includes(app.id)).map(g => g.id);
+
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+      <Card className="w-full max-w-lg m-4 max-h-[80vh] overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h2 className="text-xl font-bold text-[var(--color-text-primary)]">Asignar horarios</h2>
+            <p className="text-sm text-[var(--color-text-secondary)] mt-1">{app.nombre}</p>
+          </div>
+          <button onClick={onClose} className="p-1 hover:bg-white/10 rounded-[var(--radius-sm)]">
+            <X size={20} className="text-[var(--color-text-muted)]" />
+          </button>
+        </div>
+
+        <div className="space-y-4 flex-1 overflow-y-auto">
+          {grupos.length === 0 ? (
+            <div className="text-center py-8">
+              <Layers size={48} className="mx-auto text-[var(--color-text-muted)] mb-4" />
+              <p className="text-[var(--color-text-secondary)]">No hay grupos de horarios creados</p>
+              <p className="text-sm text-[var(--color-text-muted)] mt-1">Creá grupos en la página de Horarios</p>
+            </div>
+          ) : (
+            grupos.map(grupo => {
+              const isAssigned = appGruposIds.includes(grupo.id);
+              const grupoHorarios = grupo.horariosIds
+                .map(id => horarios.find(h => h.id === id))
+                .filter(Boolean);
+              
+              return (
+                <div
+                  key={grupo.id}
+                  className={`p-4 rounded-[var(--radius-md)] border transition-colors ${
+                    isAssigned
+                      ? 'bg-[var(--color-accent-primary)]/10 border-[var(--color-accent-primary)]'
+                      : 'bg-[var(--color-bg-secondary)] border-white/10'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => onToggleGrupo(grupo.id, isAssigned)}
+                        className={`w-6 h-6 rounded border flex items-center justify-center transition-colors ${
+                          isAssigned
+                            ? 'bg-[var(--color-accent-primary)] border-[var(--color-accent-primary)]'
+                            : 'border-[var(--color-text-muted)]'
+                        }`}
+                      >
+                        {isAssigned && (
+                          <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                          </svg>
+                        )}
+                      </button>
+                      <span className="font-medium text-[var(--color-text-primary)]">{grupo.nombre}</span>
+                    </div>
+                    <Badge variant={grupo.activo ? 'success' : 'default'}>
+                      {grupo.activo ? 'Activo' : 'Inactivo'}
+                    </Badge>
+                  </div>
+                  
+                  <div className="ml-8 space-y-1">
+                    {grupoHorarios.length === 0 ? (
+                      <p className="text-xs text-[var(--color-text-muted)]">Sin horarios</p>
+                    ) : (
+                      grupoHorarios.map((h) => h && (
+                        <div key={h.id} className="flex items-center gap-2 text-sm">
+                          <Clock size={12} className="text-[var(--color-text-muted)]" />
+                          <span className="text-[var(--color-text-secondary)]">{h.nombre}</span>
+                          <span className="text-xs text-[var(--color-text-muted)]">
+                            ({h.horaInicio} - {h.horaFin})
+                          </span>
+                          <Badge variant={h.tipo === 'BLOQUEADO' ? 'danger' : 'success'}>
+                            {h.tipo}
+                          </Badge>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <div className="pt-4 mt-4 border-t border-white/5">
+          <Button variant="secondary" onClick={onClose} className="w-full">
+            Cerrar
+          </Button>
+        </div>
       </Card>
     </div>
   );

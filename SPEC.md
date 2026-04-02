@@ -24,9 +24,9 @@
 
 ## 3. Funcionalidades
 
-### 3.1 Sistema de Horarios
+### 3.1 Sistema de Horarios con Grupos
 
-**Descripción:** Gestión de franjas horarias que determinan cuando las apps bloqueadas pueden o no ejecutarse.
+**Descripción:** Gestión de franjas horarias organizadas en grupos, permitiendo asignar diferentes configuraciones de horarios a diferentes apps.
 
 **Entidad Horario:**
 - `id`: UUID
@@ -39,16 +39,36 @@
 - `created_at`: timestamp
 - `updated_at`: timestamp
 
+**Entidad GrupoHorario:**
+- `id`: UUID
+- `nombre`: string (ej: "Juegos nocturnos", "Apps de productividad")
+- `horarios_ids`: array de UUIDs (referencias a Horarios)
+- `apps_ids`: array de UUIDs (referencias a AppsBloqueadas)
+- `activo`: boolean
+- `created_at`: timestamp
+- `updated_at`: timestamp
+
+**Relación Many-to-Many:**
+- Una app puede pertenecer a múltiples grupos de horarios
+- Un grupo puede contener múltiples horarios y múltiples apps
+- El bloqueo se evalúa por app: se buscan los grupos a los que pertenece la app, se obtienen sus horarios activos, y se verifica si el momento actual cae dentro de algún horario BLOQUEADO
+
 **Reglas de negocio:**
 - Un día puede tener múltiples horarios
-- Los horarios no pueden superponerse en el mismo día
-- Si un horario abarca medianoche (ej: 22:00–02:00), se divide en dos registros
-- Por defecto, horario bloqueado 08:00–18:00, permitido 18:00–23:00
+- Los horarios no pueden superponerse en el mismo día para la misma app
+- Si un horario abarca medianoche (ej: 22:00–02:00), se maneja con lógica de overnight
+- Por defecto, horario bloqueado 08:00–18:00, permitido 18:00–00:00
+- Cada app puede tener múltiples grupos de horarios activos
+
+**Vista de Horarios (24hs):**
+- Visualización de franjas horarias en formato 24 horas
+- Selector visual de días de la semana
+- Indicadores visuales de bloques BLOQUEADO (rojo) y PERMITIDO (verde)
 
 **Operaciones CRUD:**
-- Crear horario con validación de conflictos
-- Editar horario
-- Eliminar horario
+- Crear/editar/eliminar horarios individuales
+- Crear/editar/eliminar grupos de horarios
+- Asignar/remover apps a grupos de horarios
 - Activar/desactivar sin eliminar
 
 ---
@@ -295,8 +315,21 @@
 │ activo          │     │ ultima_ejecucion │
 │ created_at      │     │ veces_ejecutado  │
 │ updated_at      │     │ bloqueado        │
-└─────────────────┘     │ creado_en        │
-                        └──────────────────┘
+└────────┬────────┘     │ creado_en        │
+         │              └────────┬─────────┘
+         │                       │
+         ▼                       ▼
+┌─────────────────┐     ┌──────────────────┐
+│  GrupoHorario   │<--->│ app_grupo_horario│
+├─────────────────┤     ├──────────────────┤
+│ id (PK)         │     │ app_id (FK)     │
+│ nombre          │     │ grupo_id (FK)   │
+│ horarios_ids    │     └──────────────────┘
+│ apps_ids        │
+│ activo          │
+│ created_at      │
+│ updated_at      │
+└─────────────────┘
 
 ┌─────────────────┐     ┌──────────────────┐
 │  EventoHistorial│     │  SesionDiaria    │
@@ -331,11 +364,21 @@
 - `delete_horario(id: String) -> bool`
 - `toggle_horario(id: String) -> Horario`
 
+### Grupos de Horarios
+- `get_grupos_horarios() -> Vec<GrupoHorario>`
+- `create_grupo_horario(grupo: NuevoGrupoHorario) -> GrupoHorario`
+- `update_grupo_horario(id: String, grupo: GrupoHorario) -> GrupoHorario`
+- `delete_grupo_horario(id: String) -> bool`
+- `toggle_grupo_horario(id: String) -> GrupoHorario`
+- `assign_app_to_grupo(appId: String, grupoId: String) -> bool`
+- `remove_app_from_grupo(appId: String, grupoId: String) -> bool`
+- `get_apps_with_grupos() -> Vec<AppConHorarios>`
+
 ### Apps
 - `get_apps_bloqueadas() -> Vec<AppBloqueada>`
 - `add_app_bloqueada(app: NuevaApp) -> AppBloqueada`
 - `remove_app_bloqueada(id: String) -> bool`
-- `detect_steam_games() -> Vec<SteamGame>>
+- `detect_steam_games() -> Vec<SteamGame>`
 - `get_running_processes() -> Vec<ProcessInfo>`
 
 ### Bloqueo

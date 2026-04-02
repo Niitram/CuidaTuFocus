@@ -114,6 +114,33 @@ pub struct NuevaApp {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GrupoHorario {
+    pub id: String,
+    pub nombre: String,
+    pub horarios_ids: Vec<String>,
+    pub apps_ids: Vec<String>,
+    pub activo: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NuevoGrupoHorario {
+    pub nombre: String,
+    pub horarios_ids: Vec<String>,
+    pub apps_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConHorarios {
+    pub app: AppBloqueada,
+    pub grupos: Vec<GrupoHorario>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NotificationPayload {
     pub title: String,
     pub body: String,
@@ -158,6 +185,56 @@ fn delete_horario(state: State<AppState>, id: String) -> Result<bool, String> {
 fn toggle_horario(state: State<AppState>, id: String) -> Result<Horario, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.toggle_horario(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_grupos_horarios(state: State<AppState>) -> Result<Vec<GrupoHorario>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.get_grupos_horarios().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_grupo_horario(state: State<AppState>, grupo: NuevoGrupoHorario) -> Result<GrupoHorario, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.create_grupo_horario(grupo).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_grupo_horario(state: State<AppState>, id: String, grupo: GrupoHorario) -> Result<GrupoHorario, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.update_grupo_horario(&id, grupo).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_grupo_horario(state: State<AppState>, id: String) -> Result<bool, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.delete_grupo_horario(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn toggle_grupo_horario(state: State<AppState>, id: String) -> Result<GrupoHorario, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.toggle_grupo_horario(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn assign_app_to_grupo(state: State<AppState>, app_id: String, grupo_id: String) -> Result<bool, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.assign_app_to_grupo(&app_id, &grupo_id).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn remove_app_from_grupo(state: State<AppState>, app_id: String, grupo_id: String) -> Result<bool, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.remove_app_from_grupo(&app_id, &grupo_id).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn get_apps_with_grupos(state: State<AppState>) -> Result<Vec<AppConHorarios>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.get_apps_with_grupos().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -392,8 +469,14 @@ fn extract_steam_field(content: &str, field: &str) -> Option<String> {
         if line.starts_with(&format!("\"{}\"", field)) {
             if let Some(start) = line.find('"') {
                 let after_first = &line[start + 1..];
-                if let Some(end) = after_first.find('"') {
-                    return Some(after_first[..end].to_string());
+                if let Some(end_quote) = after_first.find('"') {
+                    let after_field = after_first[end_quote + 1..].trim();
+                    if let Some(value_start) = after_field.find('"') {
+                        let value_content = &after_field[value_start + 1..];
+                        if let Some(value_end) = value_content.find('"') {
+                            return Some(value_content[..value_end].to_string());
+                        }
+                    }
                 }
             }
         }
@@ -635,6 +718,50 @@ fn should_block_now(state: &State<AppState>) -> bool {
     true
 }
 
+fn is_app_blocked_now(db: &Database, app_id: &str) -> bool {
+    let horarios = match db.get_app_horarios_for_blocking(app_id) {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+    
+    let now = Local::now();
+    let current_time = NaiveTime::from_hms_opt(now.hour() as u32, now.minute() as u32, 0).unwrap();
+    let dias_semana = ["DOMINGO", "LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO"];
+    let dia_actual = dias_semana[now.weekday().num_days_from_sunday() as usize];
+    
+    for horario in horarios {
+        if !horario.activo {
+            continue;
+        }
+        if !horario.dias.contains(&dia_actual.to_string()) {
+            continue;
+        }
+        
+        let inicio = match NaiveTime::parse_from_str(&horario.hora_inicio, "%H:%M") {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let fin = match NaiveTime::parse_from_str(&horario.hora_fin, "%H:%M") {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        
+        if horario.tipo == "BLOQUEADO" {
+            if horario.hora_inicio <= horario.hora_fin {
+                if current_time >= inicio && current_time < fin {
+                    return true;
+                }
+            } else {
+                if current_time >= inicio || current_time < fin {
+                    return true;
+                }
+            }
+        }
+    }
+    
+    false
+}
+
 fn get_current_horario_tipo(state: &State<AppState>) -> Option<String> {
     let db = match state.db.lock() {
         Ok(db) => db,
@@ -681,15 +808,6 @@ fn check_and_block_processes(app: &AppHandle, state: &State<AppState>) {
         return;
     }
     
-    let horario_tipo = match get_current_horario_tipo(state) {
-        Some(t) => t,
-        None => return,
-    };
-    
-    if horario_tipo != "BLOQUEADO" {
-        return;
-    }
-    
     let modo = match state.modo_bloqueo.lock() {
         Ok(m) => m.clone(),
         Err(_) => return,
@@ -731,6 +849,10 @@ fn check_and_block_processes(app: &AppHandle, state: &State<AppState>) {
                 let app_nombre = app_blocked.nombre.clone();
                 let app_id = app_blocked.id.clone();
                 let pid_u32 = pid.as_u32();
+                
+                if !is_app_blocked_now(&db, &app_id) {
+                    continue;
+                }
                 
                 match modo.as_str() {
                     "SOFT" => {
@@ -807,6 +929,82 @@ fn send_notification(app: &AppHandle, title: &str, body: &str, app_nombre: &str,
     }
     
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_steam_field_name() {
+        let content = r#""name" "Game Name"
+"appId" "12345"
+"installDir" "SomeGameDir""#;
+        
+        let result = extract_steam_field(content, "name");
+        assert_eq!(result, Some("Game Name".to_string()));
+    }
+
+    #[test]
+    fn test_extract_steam_field_app_id() {
+        let content = r#""name" "Game Name"
+"appId" "12345""#;
+        
+        let result = extract_steam_field(content, "appId");
+        assert_eq!(result, Some("12345".to_string()));
+    }
+
+    #[test]
+    fn test_extract_steam_field_install_dir() {
+        let content = r#""name" "Game Name"
+"appId" "12345"
+"installDir" "SteamGames""#;
+        
+        let result = extract_steam_field(content, "installDir");
+        assert_eq!(result, Some("SteamGames".to_string()));
+    }
+
+    #[test]
+    fn test_extract_steam_field_not_found() {
+        let content = r#""name" "Game Name"
+"appId" "12345""#;
+        
+        let result = extract_steam_field(content, "missingField");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_steam_field_with_spaces() {
+        let content = r#""name" "Game With Spaces"
+"appId" "12345""#;
+        
+        let result = extract_steam_field(content, "name");
+        assert_eq!(result, Some("Game With Spaces".to_string()));
+    }
+
+    #[test]
+    fn test_verify_password_correct() {
+        let password = "test_password_123";
+        let hash = bcrypt::hash(password, bcrypt::DEFAULT_COST).unwrap();
+        
+        assert!(verify_password(password, &hash));
+    }
+
+    #[test]
+    fn test_verify_password_incorrect() {
+        let password = "test_password_123";
+        let hash = bcrypt::hash(password, bcrypt::DEFAULT_COST).unwrap();
+        
+        assert!(!verify_password("wrong_password", &hash));
+    }
+
+    #[test]
+    fn test_verify_password_empty() {
+        let password = "test_password_123";
+        let hash = bcrypt::hash(password, bcrypt::DEFAULT_COST).unwrap();
+        
+        assert!(!verify_password("", &hash));
+    }
 }
 
 fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -900,6 +1098,14 @@ pub fn run() {
             update_horario,
             delete_horario,
             toggle_horario,
+            get_grupos_horarios,
+            create_grupo_horario,
+            update_grupo_horario,
+            delete_grupo_horario,
+            toggle_grupo_horario,
+            assign_app_to_grupo,
+            remove_app_from_grupo,
+            get_apps_with_grupos,
             get_apps_bloqueadas,
             add_app_bloqueada,
             remove_app_bloqueada,

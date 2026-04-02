@@ -1,5 +1,6 @@
 use crate::{
-    AppBloqueada, AppMasTentacion, Estadisticas, EventoHistorial, Horario, NuevaApp, NuevoHorario,
+    AppBloqueada, AppConHorarios, AppMasTentacion, Estadisticas, EventoHistorial, GrupoHorario,
+    Horario, NuevaApp, NuevoGrupoHorario, NuevoHorario,
 };
 use chrono::{Duration, Local};
 use rusqlite::{params, Connection, Result};
@@ -33,7 +34,7 @@ mod tests {
         let count: i32 = db.conn
             .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 4);
+        assert_eq!(count, 6);
     }
 
     #[test]
@@ -348,6 +349,22 @@ impl Database {
             
             CREATE INDEX IF NOT EXISTS idx_historial_timestamp ON historial(timestamp);
             CREATE INDEX IF NOT EXISTS idx_historial_app_id ON historial(app_id);
+
+            CREATE TABLE IF NOT EXISTS grupos_horarios (
+                id TEXT PRIMARY KEY,
+                nombre TEXT NOT NULL,
+                horarios_ids TEXT NOT NULL,
+                apps_ids TEXT NOT NULL,
+                activo INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            
+            CREATE TABLE IF NOT EXISTS app_grupo_horario (
+                app_id TEXT NOT NULL,
+                grupo_id TEXT NOT NULL,
+                PRIMARY KEY (app_id, grupo_id)
+            );
             ",
         )?;
         Ok(())
@@ -662,6 +679,184 @@ impl Database {
         })?;
 
         rows.collect()
+    }
+
+    pub fn get_grupos_horarios(&self) -> Result<Vec<GrupoHorario>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, nombre, horarios_ids, apps_ids, activo, created_at, updated_at FROM grupos_horarios"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let horarios_ids_str: String = row.get(2)?;
+            let apps_ids_str: String = row.get(3)?;
+            let horarios_ids: Vec<String> =
+                serde_json::from_str(&horarios_ids_str).unwrap_or_default();
+            let apps_ids: Vec<String> = serde_json::from_str(&apps_ids_str).unwrap_or_default();
+
+            Ok(GrupoHorario {
+                id: row.get(0)?,
+                nombre: row.get(1)?,
+                horarios_ids,
+                apps_ids,
+                activo: row.get::<_, i32>(4)? == 1,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })?;
+
+        rows.collect()
+    }
+
+    pub fn create_grupo_horario(&self, grupo: NuevoGrupoHorario) -> Result<GrupoHorario> {
+        let id = Uuid::new_v4().to_string();
+        let now = Local::now().to_rfc3339();
+        let horarios_json = serde_json::to_string(&grupo.horarios_ids).unwrap_or_default();
+        let apps_json = serde_json::to_string(&grupo.apps_ids).unwrap_or_default();
+
+        self.conn.execute(
+            "INSERT INTO grupos_horarios (id, nombre, horarios_ids, apps_ids, activo, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![&id, &grupo.nombre, &horarios_json, &apps_json, true, &now, &now]
+        )?;
+
+        for app_id in &grupo.apps_ids {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO app_grupo_horario (app_id, grupo_id) VALUES (?1, ?2)",
+                params![app_id, &id],
+            )?;
+        }
+
+        Ok(GrupoHorario {
+            id,
+            nombre: grupo.nombre,
+            horarios_ids: grupo.horarios_ids,
+            apps_ids: grupo.apps_ids,
+            activo: true,
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub fn update_grupo_horario(&self, id: &str, mut grupo: GrupoHorario) -> Result<GrupoHorario> {
+        let now = Local::now().to_rfc3339();
+        let horarios_json = serde_json::to_string(&grupo.horarios_ids).unwrap_or_default();
+        let apps_json = serde_json::to_string(&grupo.apps_ids).unwrap_or_default();
+
+        self.conn.execute(
+            "UPDATE grupos_horarios SET nombre = ?1, horarios_ids = ?2, apps_ids = ?3, activo = ?4, updated_at = ?5 WHERE id = ?6",
+            params![&grupo.nombre, &horarios_json, &apps_json, grupo.activo, &now, id]
+        )?;
+
+        self.conn.execute(
+            "DELETE FROM app_grupo_horario WHERE grupo_id = ?1",
+            params![id],
+        )?;
+        for app_id in &grupo.apps_ids {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO app_grupo_horario (app_id, grupo_id) VALUES (?1, ?2)",
+                params![app_id, id],
+            )?;
+        }
+
+        grupo.updated_at = now;
+        Ok(grupo)
+    }
+
+    pub fn delete_grupo_horario(&self, id: &str) -> Result<bool> {
+        self.conn.execute(
+            "DELETE FROM app_grupo_horario WHERE grupo_id = ?1",
+            params![id],
+        )?;
+        let rows = self
+            .conn
+            .execute("DELETE FROM grupos_horarios WHERE id = ?1", params![id])?;
+        Ok(rows > 0)
+    }
+
+    pub fn toggle_grupo_horario(&self, id: &str) -> Result<GrupoHorario> {
+        let now = Local::now().to_rfc3339();
+
+        self.conn.execute(
+            "UPDATE grupos_horarios SET activo = NOT activo, updated_at = ?1 WHERE id = ?2",
+            params![&now, id],
+        )?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, nombre, horarios_ids, apps_ids, activo, created_at, updated_at FROM grupos_horarios WHERE id = ?1"
+        )?;
+
+        stmt.query_row(params![id], |row| {
+            let horarios_ids_str: String = row.get(2)?;
+            let apps_ids_str: String = row.get(3)?;
+            let horarios_ids: Vec<String> =
+                serde_json::from_str(&horarios_ids_str).unwrap_or_default();
+            let apps_ids: Vec<String> = serde_json::from_str(&apps_ids_str).unwrap_or_default();
+
+            Ok(GrupoHorario {
+                id: row.get(0)?,
+                nombre: row.get(1)?,
+                horarios_ids,
+                apps_ids,
+                activo: row.get::<_, i32>(4)? == 1,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })
+    }
+
+    pub fn assign_app_to_grupo(&self, app_id: &str, grupo_id: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO app_grupo_horario (app_id, grupo_id) VALUES (?1, ?2)",
+            params![app_id, grupo_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_app_from_grupo(&self, app_id: &str, grupo_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM app_grupo_horario WHERE app_id = ?1 AND grupo_id = ?2",
+            params![app_id, grupo_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_apps_with_grupos(&self) -> Result<Vec<AppConHorarios>> {
+        let apps = self.get_apps_bloqueadas()?;
+        let grupos = self.get_grupos_horarios()?;
+
+        let mut result = Vec::new();
+        for app in apps {
+            let app_grupos: Vec<GrupoHorario> = grupos
+                .iter()
+                .filter(|g| g.apps_ids.contains(&app.id))
+                .cloned()
+                .collect();
+            result.push(AppConHorarios {
+                app,
+                grupos: app_grupos,
+            });
+        }
+        Ok(result)
+    }
+
+    pub fn get_app_horarios_for_blocking(&self, app_id: &str) -> Result<Vec<Horario>> {
+        let grupos = self.get_grupos_horarios()?;
+        let horarios = self.get_horarios()?;
+        let app_id_str = app_id.to_string();
+
+        let mut app_horarios_ids = Vec::new();
+        for grupo in grupos {
+            if grupo.apps_ids.contains(&app_id_str) && grupo.activo {
+                app_horarios_ids.extend(grupo.horarios_ids.clone());
+            }
+        }
+
+        let mut result = Vec::new();
+        for horario in horarios {
+            if app_horarios_ids.contains(&horario.id) {
+                result.push(horario);
+            }
+        }
+        Ok(result)
     }
 }
 

@@ -2,12 +2,12 @@ export interface Horario {
   id: string;
   nombre: string;
   tipo: 'BLOQUEADO' | 'PERMITIDO';
-  hora_inicio: string;
-  hora_fin: string;
+  horaInicio: string;
+  horaFin: string;
   dias: DiaSemana[];
   activo: boolean;
-  created_at: string;
-  updated_at: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type DiaSemana = 'LUNES' | 'MARTES' | 'MIERCOLES' | 'JUEVES' | 'VIERNES' | 'SABADO' | 'DOMINGO';
@@ -69,8 +69,8 @@ export interface ProcessInfo {
 export interface NuevoHorario {
   nombre: string;
   tipo: 'BLOQUEADO' | 'PERMITIDO';
-  hora_inicio: string;
-  hora_fin: string;
+  horaInicio: string;
+  horaFin: string;
   dias: DiaSemana[];
 }
 
@@ -78,4 +78,25 @@ export interface NuevaApp {
   nombre: string;
   rutaEjecutable: string;
   categoria: AppBloqueada['categoria'];
+}
+
+export interface GrupoHorario {
+  id: string;
+  nombre: string;
+  horariosIds: string[];
+  appsIds: string[];
+  activo: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NuevoGrupoHorario {
+  nombre: string;
+  horariosIds: string[];
+  appsIds: string[];
+}
+
+export interface AppConHorarios {
+  app: AppBloqueada;
+  grupos: GrupoHorario[];
 }

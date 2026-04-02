@@ -46,8 +46,8 @@ export function Dashboard() {
     const horariosActivos = horarios.filter(h => h.activo && h.dias.includes(diaActual as any));
     
     for (const horario of horariosActivos) {
-      if (!horario.hora_fin) continue;
-      const [hFin] = horario.hora_fin.split(':').map(Number);
+      if (!horario.horaFin) continue;
+      const [hFin] = horario.horaFin.split(':').map(Number);
       const ahoraMin = ahora.getHours() * 60 + ahora.getMinutes();
       const finMin = hFin * 60;
       
@@ -56,7 +56,7 @@ export function Dashboard() {
         return {
           tipo: horario.tipo === 'BLOQUEADO' ? 'permitido' : 'bloqueado',
           minutos: diff,
-          hora: horario.hora_fin
+          hora: horario.horaFin
         };
       }
     }
