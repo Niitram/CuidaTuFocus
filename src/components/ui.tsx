@@ -68,15 +68,15 @@ export function Toggle({ checked, onChange, disabled = false, label }: TogglePro
         disabled={disabled}
         onClick={() => onChange(!checked)}
         className={clsx(
-          'relative w-12 h-6 rounded-full transition-colors duration-200',
+          'relative w-12 h-6 rounded-full transition-colors duration-200 overflow-hidden',
           checked ? 'bg-[var(--color-accent-primary)]' : 'bg-[var(--color-bg-secondary)]',
           disabled && 'opacity-50 cursor-not-allowed'
         )}
       >
         <span
           className={clsx(
-            'absolute top-1 w-4 h-4 rounded-full bg-white transition-transform duration-200',
-            checked ? 'translate-x-7' : 'translate-x-1'
+            'absolute top-1 w-4 h-4 rounded-full bg-white transition-all duration-200',
+            checked ? 'right-1' : 'left-1'
           )}
         />
       </button>
