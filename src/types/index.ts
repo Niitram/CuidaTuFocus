@@ -15,14 +15,14 @@ export type DiaSemana = 'LUNES' | 'MARTES' | 'MIERCOLES' | 'JUEVES' | 'VIERNES' 
 export interface AppBloqueada {
   id: string;
   nombre: string;
-  ruta_ejecutable: string;
+  rutaEjecutable: string;
   icono: string | null;
-  hash_sha256: string | null;
+  hashSha256: string | null;
   categoria: 'STEAM' | 'EPIC' | 'GOG' | 'MANUAL' | 'DETECTADO';
-  ultima_ejecucion: string | null;
-  veces_ejecutado: number;
+  ultimaEjecucion: string | null;
+  vecesEjecutado: number;
   bloqueado: boolean;
-  creado_en: string;
+  creadoEn: string;
 }
 
 export interface NotificationPayload {
@@ -76,6 +76,6 @@ export interface NuevoHorario {
 
 export interface NuevaApp {
   nombre: string;
-  ruta_ejecutable: string;
+  rutaEjecutable: string;
   categoria: AppBloqueada['categoria'];
 }

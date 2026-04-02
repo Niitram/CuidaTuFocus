@@ -27,6 +27,8 @@ export function Apps() {
     app.nombre.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const [steamModalStep, setSteamModalStep] = useState<'menu' | 'steam' | 'procesos' | 'manual'>('menu');
+
   const handleDetectarSteam = async () => {
     setLoadingSteam(true);
     try {
@@ -34,6 +36,7 @@ export function Apps() {
       setSteamGames(games);
       if (games.length > 0) {
         setShowAddModal(true);
+        setSteamModalStep('steam');
       }
     } catch (err) {
       console.error(err);
@@ -66,7 +69,7 @@ export function Apps() {
             className="w-full pl-10 pr-4 py-2 rounded-[var(--radius-md)] bg-[var(--color-bg-secondary)] border border-white/10 text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent-primary)] transition-colors"
           />
         </div>
-        <Button variant="secondary" onClick={handleDetectarSteam} disabled={loadingSteam}>
+        <Button variant="secondary" onClick={() => handleDetectarSteam()} disabled={loadingSteam}>
           <RefreshCw size={18} className={loadingSteam ? 'animate-spin' : ''} />
           Detectar Steam
         </Button>
@@ -95,9 +98,9 @@ export function Apps() {
                 <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium mt-1 ${CATEGORIAS_MAP[app.categoria].color}`}>
                   {CATEGORIAS_MAP[app.categoria].label}
                 </span>
-                {app.ultima_ejecucion && (
+                {app.ultimaEjecucion && (
                   <p className="text-xs text-[var(--color-text-muted)] mt-2">
-                    Ultima vez: {new Date(app.ultima_ejecucion).toLocaleDateString('es-ES')}
+                    Ultima vez: {new Date(app.ultimaEjecucion).toLocaleDateString('es-ES')}
                   </p>
                 )}
               </div>
@@ -131,10 +134,11 @@ export function Apps() {
       {showAddModal && (
         <AddAppModal
           steamGames={steamGames}
-          onClose={() => { setShowAddModal(false); setSteamGames([]); }}
+          onClose={() => { setShowAddModal(false); setSteamGames([]); setSteamModalStep('menu'); }}
           onAdd={agregarApp}
-          onDetectSteam={handleDetectarSteam}
+          onDetectSteam={() => handleDetectarSteam()}
           getProcesses={getRunningProcesses}
+          initialStep={steamModalStep}
         />
       )}
     </div>
@@ -147,10 +151,11 @@ interface AddAppModalProps {
   onAdd: (app: NuevaApp) => Promise<void>;
   onDetectSteam: () => Promise<void>;
   getProcesses: () => Promise<ProcessInfo[]>;
+  initialStep?: 'menu' | 'steam' | 'procesos' | 'manual';
 }
 
-function AddAppModal({ steamGames, onClose, onAdd, onDetectSteam, getProcesses }: AddAppModalProps) {
-  const [step, setStep] = useState<'menu' | 'steam' | 'procesos' | 'manual'>('menu');
+function AddAppModal({ steamGames, onClose, onAdd, onDetectSteam, getProcesses, initialStep = 'menu' }: AddAppModalProps) {
+  const [step, setStep] = useState<'menu' | 'steam' | 'procesos' | 'manual'>(initialStep);
   const [processes, setProcesses] = useState<ProcessInfo[]>([]);
   const [nombre, setNombre] = useState('');
   const [ruta, setRuta] = useState('');
@@ -161,7 +166,7 @@ function AddAppModal({ steamGames, onClose, onAdd, onDetectSteam, getProcesses }
     try {
       await onAdd({
         nombre: game.nombre,
-        ruta_ejecutable: game.ruta_ejecutable,
+        rutaEjecutable: game.rutaEjecutable,
         categoria: 'STEAM'
       });
       onClose();
@@ -177,7 +182,7 @@ function AddAppModal({ steamGames, onClose, onAdd, onDetectSteam, getProcesses }
     try {
       await onAdd({
         nombre: proc.nombre.replace('.exe', ''),
-        ruta_ejecutable: proc.ruta,
+        rutaEjecutable: proc.ruta,
         categoria: 'DETECTADO'
       });
       onClose();
@@ -192,7 +197,7 @@ function AddAppModal({ steamGames, onClose, onAdd, onDetectSteam, getProcesses }
     if (!nombre || !ruta) return;
     setLoading(true);
     try {
-      await onAdd({ nombre, ruta_ejecutable: ruta, categoria: 'MANUAL' });
+      await onAdd({ nombre, rutaEjecutable: ruta, categoria: 'MANUAL' });
       onClose();
     } catch (err) {
       console.error(err);

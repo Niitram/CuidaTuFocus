@@ -219,14 +219,14 @@ describe('useAppStore', () => {
         {
           id: '1',
           nombre: 'GTA V',
-          ruta_ejecutable: 'C:\\Games\\GTAV.exe',
+          rutaEjecutable: 'C:\\Games\\GTAV.exe',
           icono: null,
-          hash_sha256: null,
+          hashSha256: null,
           categoria: 'STEAM' as const,
-          ultima_ejecucion: null,
-          veces_ejecutado: 0,
+          ultimaEjecucion: null,
+          vecesEjecutado: 0,
           bloqueado: true,
-          creado_en: '2024-01-01T00:00:00Z',
+          creadoEn: '2024-01-01T00:00:00Z',
         },
       ];
       
@@ -250,7 +250,7 @@ describe('useAppStore', () => {
       
       const nuevaApp = {
         nombre: 'Cyberpunk 2077',
-        ruta_ejecutable: 'C:\\Games\\Cyberpunk2077.exe',
+        rutaEjecutable: 'C:\\Games\\Cyberpunk2077.exe',
         categoria: 'MANUAL' as const,
       };
       
@@ -424,14 +424,14 @@ describe('useAppStore', () => {
         {
           id: 'steam-1',
           nombre: 'Cyberpunk 2077',
-          ruta_ejecutable: 'C:\\Games\\Cyberpunk2077.exe',
+          rutaEjecutable: 'C:\\Games\\Cyberpunk2077.exe',
           icono: null,
-          hash_sha256: null,
+          hashSha256: null,
           categoria: 'STEAM' as const,
-          ultima_ejecucion: null,
-          veces_ejecutado: 0,
+          ultimaEjecucion: null,
+          vecesEjecutado: 0,
           bloqueado: true,
-          creado_en: '2024-01-01T00:00:00Z',
+          creadoEn: '2024-01-01T00:00:00Z',
         },
       ];
       

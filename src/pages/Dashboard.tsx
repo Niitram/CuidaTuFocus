@@ -36,6 +36,8 @@ export function Dashboard() {
   };
 
   const proximoCambio = () => {
+    if (!horarios || horarios.length === 0) return null;
+    
     const ahora = new Date();
     const hoy = ahora.getDay();
     const diasSemana = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'];
@@ -44,6 +46,7 @@ export function Dashboard() {
     const horariosActivos = horarios.filter(h => h.activo && h.dias.includes(diaActual as any));
     
     for (const horario of horariosActivos) {
+      if (!horario.hora_fin) continue;
       const [hFin] = horario.hora_fin.split(':').map(Number);
       const ahoraMin = ahora.getHours() * 60 + ahora.getMinutes();
       const finMin = hFin * 60;
