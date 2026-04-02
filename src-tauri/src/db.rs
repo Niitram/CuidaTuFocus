@@ -1,0 +1,361 @@
+use crate::{
+    AppBloqueada, AppMasTentacion, Estadisticas, EventoHistorial, Horario, NuevaApp, NuevoHorario,
+};
+use chrono::{Datelike, Duration, Local};
+use rusqlite::{params, Connection, Result};
+use std::path::PathBuf;
+
+pub struct Database {
+    conn: Connection,
+}
+
+impl Database {
+    pub fn new() -> Result<Self> {
+        let db_path = get_db_path();
+
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+
+        let conn = Connection::open(&db_path)?;
+        let db = Database { conn };
+        db.init_schema()?;
+        db.insert_default_data()?;
+        Ok(db)
+    }
+
+    fn init_schema(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS horarios (
+                id TEXT PRIMARY KEY,
+                nombre TEXT NOT NULL,
+                tipo TEXT NOT NULL,
+                hora_inicio TEXT NOT NULL,
+                hora_fin TEXT NOT NULL,
+                dias TEXT NOT NULL,
+                activo INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            
+            CREATE TABLE IF NOT EXISTS apps_bloqueadas (
+                id TEXT PRIMARY KEY,
+                nombre TEXT NOT NULL,
+                ruta_ejecutable TEXT NOT NULL UNIQUE,
+                icono TEXT,
+                categoria TEXT NOT NULL,
+                ultima_ejecucion TEXT,
+                veces_ejecutado INTEGER NOT NULL DEFAULT 0,
+                bloqueado INTEGER NOT NULL DEFAULT 1,
+                creado_en TEXT NOT NULL
+            );
+            
+            CREATE TABLE IF NOT EXISTS historial (
+                id TEXT PRIMARY KEY,
+                app_id TEXT NOT NULL,
+                app_nombre TEXT NOT NULL,
+                tipo_evento TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                modo_bloqueo TEXT NOT NULL,
+                duracion_proceso_ms INTEGER NOT NULL DEFAULT 0,
+                detalles TEXT NOT NULL DEFAULT '{}'
+            );
+            
+            CREATE TABLE IF NOT EXISTS config (
+                clave TEXT PRIMARY KEY,
+                valor TEXT NOT NULL,
+                tipo_dato TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_historial_timestamp ON historial(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_historial_app_id ON historial(app_id);
+            ",
+        )?;
+        Ok(())
+    }
+
+    fn insert_default_data(&self) -> Result<()> {
+        let count: i32 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM horarios", [], |row| row.get(0))?;
+
+        if count == 0 {
+            let now = Local::now().to_rfc3339();
+
+            self.conn.execute(
+                "INSERT INTO horarios (id, nombre, tipo, hora_inicio, hora_fin, dias, activo, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    "Horario laboral",
+                    "BLOQUEADO",
+                    "08:00",
+                    "18:00",
+                    "[\"LUNES\",\"MARTES\",\"MIERCOLES\",\"JUEVES\",\"VIERNES\"]",
+                    true,
+                    &now,
+                    &now
+                ]
+            )?;
+
+            self.conn.execute(
+                "INSERT INTO horarios (id, nombre, tipo, hora_inicio, hora_fin, dias, activo, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    "Tiempo libre",
+                    "PERMITIDO",
+                    "18:00",
+                    "23:00",
+                    "[\"LUNES\",\"MARTES\",\"MIERCOLES\",\"JUEVES\",\"VIERNES\"]",
+                    true,
+                    &now,
+                    &now
+                ]
+            )?;
+        }
+
+        Ok(())
+    }
+
+    pub fn get_horarios(&self) -> Result<Vec<Horario>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, nombre, tipo, hora_inicio, hora_fin, dias, activo, created_at, updated_at FROM horarios"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let dias_str: String = row.get(5)?;
+            let dias: Vec<String> = serde_json::from_str(&dias_str).unwrap_or_default();
+
+            Ok(Horario {
+                id: row.get(0)?,
+                nombre: row.get(1)?,
+                tipo: row.get(2)?,
+                hora_inicio: row.get(3)?,
+                hora_fin: row.get(4)?,
+                dias,
+                activo: row.get::<_, i32>(6)? == 1,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })?;
+
+        rows.collect()
+    }
+
+    pub fn create_horario(&self, horario: NuevoHorario) -> Result<Horario> {
+        let id = Uuid::new_v4().to_string();
+        let now = Local::now().to_rfc3339();
+        let dias_json = serde_json::to_string(&horario.dias).unwrap_or_default();
+
+        self.conn.execute(
+            "INSERT INTO horarios (id, nombre, tipo, hora_inicio, hora_fin, dias, activo, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![&id, &horario.nombre, &horario.tipo, &horario.hora_inicio, &horario.hora_fin, &dias_json, true, &now, &now]
+        )?;
+
+        Ok(Horario {
+            id,
+            nombre: horario.nombre,
+            tipo: horario.tipo,
+            hora_inicio: horario.hora_inicio,
+            hora_fin: horario.hora_fin,
+            dias: horario.dias,
+            activo: true,
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub fn update_horario(&self, id: &str, mut horario: Horario) -> Result<Horario> {
+        let now = Local::now().to_rfc3339();
+        let dias_json = serde_json::to_string(&horario.dias).unwrap_or_default();
+
+        self.conn.execute(
+            "UPDATE horarios SET nombre = ?1, tipo = ?2, hora_inicio = ?3, hora_fin = ?4, dias = ?5, activo = ?6, updated_at = ?7 WHERE id = ?8",
+            params![&horario.nombre, &horario.tipo, &horario.hora_inicio, &horario.hora_fin, &dias_json, horario.activo, &now, id]
+        )?;
+
+        horario.updated_at = now;
+        Ok(horario)
+    }
+
+    pub fn delete_horario(&self, id: &str) -> Result<bool> {
+        let rows = self
+            .conn
+            .execute("DELETE FROM horarios WHERE id = ?1", params![id])?;
+        Ok(rows > 0)
+    }
+
+    pub fn toggle_horario(&self, id: &str) -> Result<Horario> {
+        let now = Local::now().to_rfc3339();
+
+        self.conn.execute(
+            "UPDATE horarios SET activo = NOT activo, updated_at = ?1 WHERE id = ?2",
+            params![&now, id],
+        )?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, nombre, tipo, hora_inicio, hora_fin, dias, activo, created_at, updated_at FROM horarios WHERE id = ?1"
+        )?;
+
+        stmt.query_row(params![id], |row| {
+            let dias_str: String = row.get(5)?;
+            let dias: Vec<String> = serde_json::from_str(&dias_str).unwrap_or_default();
+
+            Ok(Horario {
+                id: row.get(0)?,
+                nombre: row.get(1)?,
+                tipo: row.get(2)?,
+                hora_inicio: row.get(3)?,
+                hora_fin: row.get(4)?,
+                dias,
+                activo: row.get::<_, i32>(6)? == 1,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })
+    }
+
+    pub fn get_apps_bloqueadas(&self) -> Result<Vec<AppBloqueada>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, nombre, ruta_ejecutable, icono, categoria, ultima_ejecucion, veces_ejecutado, bloqueado, creado_en FROM apps_bloqueadas ORDER BY nombre"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok(AppBloqueada {
+                id: row.get(0)?,
+                nombre: row.get(1)?,
+                ruta_ejecutable: row.get(2)?,
+                icono: row.get(3)?,
+                categoria: row.get(4)?,
+                ultima_ejecucion: row.get(5)?,
+                veces_ejecutado: row.get(6)?,
+                bloqueado: row.get::<_, i32>(7)? == 1,
+                creado_en: row.get(8)?,
+            })
+        })?;
+
+        rows.collect()
+    }
+
+    pub fn add_app_bloqueada(&self, app: NuevaApp) -> Result<AppBloqueada> {
+        let id = Uuid::new_v4().to_string();
+        let now = Local::now().to_rfc3339();
+
+        self.conn.execute(
+            "INSERT INTO apps_bloqueadas (id, nombre, ruta_ejecutable, icono, categoria, ultima_ejecucion, veces_ejecutado, bloqueado, creado_en) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![&id, &app.nombre, &app.ruta_ejecutable, Option::<String>::None, &app.categoria, Option::<String>::None, 0, true, &now]
+        )?;
+
+        Ok(AppBloqueada {
+            id,
+            nombre: app.nombre,
+            ruta_ejecutable: app.ruta_ejecutable,
+            icono: None,
+            categoria: app.categoria,
+            ultima_ejecucion: None,
+            veces_ejecutado: 0,
+            bloqueado: true,
+            creado_en: now,
+        })
+    }
+
+    pub fn remove_app_bloqueada(&self, id: &str) -> Result<bool> {
+        let rows = self
+            .conn
+            .execute("DELETE FROM apps_bloqueadas WHERE id = ?1", params![id])?;
+        Ok(rows > 0)
+    }
+
+    pub fn toggle_app_bloqueada(&self, id: &str) -> Result<AppBloqueada> {
+        self.conn.execute(
+            "UPDATE apps_bloqueadas SET bloqueado = NOT bloqueado WHERE id = ?1",
+            params![id],
+        )?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, nombre, ruta_ejecutable, icono, categoria, ultima_ejecucion, veces_ejecutado, bloqueado, creado_en FROM apps_bloqueadas WHERE id = ?1"
+        )?;
+
+        stmt.query_row(params![id], |row| {
+            Ok(AppBloqueada {
+                id: row.get(0)?,
+                nombre: row.get(1)?,
+                ruta_ejecutable: row.get(2)?,
+                icono: row.get(3)?,
+                categoria: row.get(4)?,
+                ultima_ejecucion: row.get(5)?,
+                veces_ejecutado: row.get(6)?,
+                bloqueado: row.get::<_, i32>(7)? == 1,
+                creado_en: row.get(8)?,
+            })
+        })
+    }
+
+    pub fn get_estadisticas(&self) -> Result<Estadisticas> {
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        let today_start = format!("{} 00:00:00", today);
+
+        let bloqueos_hoy: i32 = self.conn.query_row(
+            "SELECT COUNT(*) FROM historial WHERE tipo_evento = 'BLOQUEO' AND timestamp >= ?1",
+            params![&today_start],
+            |row| row.get(0),
+        )?;
+
+        let week_start = (Local::now() - Duration::days(7))
+            .format("%Y-%m-%d 00:00:00")
+            .to_string();
+        let bloqueos_semana: i32 = self.conn.query_row(
+            "SELECT COUNT(*) FROM historial WHERE tipo_evento = 'BLOQUEO' AND timestamp >= ?1",
+            params![&week_start],
+            |row| row.get(0),
+        )?;
+
+        let app_mas_tentacion: Option<AppMasTentacion> = self.conn.query_row(
+            "SELECT app_id, app_nombre, COUNT(*) as cantidad FROM historial WHERE tipo_evento = 'BLOQUEO' AND timestamp >= ?1 GROUP BY app_id ORDER BY cantidad DESC LIMIT 1",
+            params![&week_start],
+            |row| {
+                Ok(AppMasTentacion {
+                    id: row.get(0)?,
+                    nombre: row.get(1)?,
+                    cantidad: row.get(2)?,
+                })
+            }
+        ).ok();
+
+        Ok(Estadisticas {
+            bloqueos_hoy,
+            bloqueos_semana,
+            racha_dias: 0,
+            app_mas_tentacion,
+        })
+    }
+
+    pub fn get_historial(&self, limite: usize) -> Result<Vec<EventoHistorial>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, app_id, app_nombre, tipo_evento, timestamp, modo_bloqueo, duracion_proceso_ms, detalles FROM historial ORDER BY timestamp DESC LIMIT ?1"
+        )?;
+
+        let rows = stmt.query_map(params![limite as i32], |row| {
+            Ok(EventoHistorial {
+                id: row.get(0)?,
+                app_id: row.get(1)?,
+                app_nombre: row.get(2)?,
+                tipo_evento: row.get(3)?,
+                timestamp: row.get(4)?,
+                modo_bloqueo: row.get(5)?,
+                duracion_proceso_ms: row.get(6)?,
+                detalles: row.get(7)?,
+            })
+        })?;
+
+        rows.collect()
+    }
+}
+
+fn get_db_path() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("CuidaTuFocus")
+        .join("cuidatufocus.db")
+}
