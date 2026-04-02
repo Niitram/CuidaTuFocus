@@ -764,6 +764,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
+ "tempfile",
  "tokio",
  "uuid",
  "windows 0.58.0",

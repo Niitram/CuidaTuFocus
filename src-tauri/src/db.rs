@@ -1,9 +1,285 @@
 use crate::{
     AppBloqueada, AppMasTentacion, Estadisticas, EventoHistorial, Horario, NuevaApp, NuevoHorario,
 };
-use chrono::{Datelike, Duration, Local};
+use chrono::{Duration, Local};
 use rusqlite::{params, Connection, Result};
 use std::path::PathBuf;
+use uuid::Uuid;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_db() -> Result<Database> {
+        let conn = Connection::open_in_memory()?;
+        let db = Database { conn };
+        db.init_schema()?;
+        Ok(db)
+    }
+
+    #[test]
+    fn test_database_creation() {
+        let result = create_test_db();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_init_schema_creates_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        let db = Database { conn };
+
+        assert!(db.init_schema().is_ok());
+
+        let count: i32 = db.conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn test_get_horarios_empty() {
+        let db = create_test_db().unwrap();
+        let horarios = db.get_horarios();
+        assert!(horarios.is_ok());
+    }
+
+    #[test]
+    fn test_create_horario() {
+        let db = create_test_db().unwrap();
+
+        let horario = NuevoHorario {
+            nombre: "Test Horario".to_string(),
+            tipo: "BLOQUEADO".to_string(),
+            hora_inicio: "09:00".to_string(),
+            hora_fin: "17:00".to_string(),
+            dias: vec!["LUNES".to_string(), "MARTES".to_string()],
+        };
+
+        let result = db.create_horario(horario);
+        assert!(result.is_ok());
+
+        let created = result.unwrap();
+        assert_eq!(created.nombre, "Test Horario");
+        assert_eq!(created.tipo, "BLOQUEADO");
+        assert!(created.activo);
+    }
+
+    #[test]
+    fn test_update_horario() {
+        let db = create_test_db().unwrap();
+
+        let horario = NuevoHorario {
+            nombre: "Original".to_string(),
+            tipo: "BLOQUEADO".to_string(),
+            hora_inicio: "09:00".to_string(),
+            hora_fin: "17:00".to_string(),
+            dias: vec!["LUNES".to_string()],
+        };
+
+        let created = db.create_horario(horario).unwrap();
+
+        let mut updated = created.clone();
+        updated.nombre = "Updated".to_string();
+
+        let result = db.update_horario(&created.id, updated);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().nombre, "Updated");
+    }
+
+    #[test]
+    fn test_delete_horario() {
+        let db = create_test_db().unwrap();
+
+        let horario = NuevoHorario {
+            nombre: "To Delete".to_string(),
+            tipo: "PERMITIDO".to_string(),
+            hora_inicio: "18:00".to_string(),
+            hora_fin: "22:00".to_string(),
+            dias: vec!["VIERNES".to_string()],
+        };
+
+        let created = db.create_horario(horario).unwrap();
+
+        let delete_result = db.delete_horario(&created.id);
+        assert!(delete_result.is_ok());
+        assert!(delete_result.unwrap());
+
+        let get_result = db.get_horarios().unwrap();
+        assert!(get_result.iter().find(|h| h.id == created.id).is_none());
+    }
+
+    #[test]
+    fn test_toggle_horario() {
+        let db = create_test_db().unwrap();
+
+        let horario = NuevoHorario {
+            nombre: "Toggle Test".to_string(),
+            tipo: "BLOQUEADO".to_string(),
+            hora_inicio: "08:00".to_string(),
+            hora_fin: "18:00".to_string(),
+            dias: vec!["LUNES".to_string()],
+        };
+
+        let created = db.create_horario(horario).unwrap();
+        assert!(created.activo);
+
+        let toggled = db.toggle_horario(&created.id).unwrap();
+        assert!(!toggled.activo);
+
+        let toggled_again = db.toggle_horario(&created.id).unwrap();
+        assert!(toggled_again.activo);
+    }
+
+    #[test]
+    fn test_get_apps_bloqueadas_empty() {
+        let db = create_test_db().unwrap();
+        let apps = db.get_apps_bloqueadas();
+        assert!(apps.is_ok());
+        assert!(apps.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_add_app_bloqueada() {
+        let db = create_test_db().unwrap();
+
+        let app = NuevaApp {
+            nombre: "Test Game".to_string(),
+            ruta_ejecutable: "C:\\Games\\TestGame.exe".to_string(),
+            categoria: "MANUAL".to_string(),
+        };
+
+        let result = db.add_app_bloqueada(app, None, None);
+        assert!(result.is_ok());
+
+        let added = result.unwrap();
+        assert_eq!(added.nombre, "Test Game");
+        assert_eq!(added.categoria, "MANUAL");
+        assert!(added.bloqueado);
+    }
+
+    #[test]
+    fn test_remove_app_bloqueada() {
+        let db = create_test_db().unwrap();
+
+        let app = NuevaApp {
+            nombre: "To Remove".to_string(),
+            ruta_ejecutable: "C:\\Games\\Remove.exe".to_string(),
+            categoria: "MANUAL".to_string(),
+        };
+
+        let created = db.add_app_bloqueada(app, None, None).unwrap();
+
+        let remove_result = db.remove_app_bloqueada(&created.id);
+        assert!(remove_result.is_ok());
+        assert!(remove_result.unwrap());
+    }
+
+    #[test]
+    fn test_toggle_app_bloqueada() {
+        let db = create_test_db().unwrap();
+
+        let app = NuevaApp {
+            nombre: "Toggle App".to_string(),
+            ruta_ejecutable: "C:\\Games\\Toggle.exe".to_string(),
+            categoria: "STEAM".to_string(),
+        };
+
+        let created = db.add_app_bloqueada(app, None, None).unwrap();
+        assert!(created.bloqueado);
+
+        let toggled = db.toggle_app_bloqueada(&created.id).unwrap();
+        assert!(!toggled.bloqueado);
+    }
+
+    #[test]
+    fn test_record_event() {
+        let db = create_test_db().unwrap();
+
+        let app = NuevaApp {
+            nombre: "Event Test".to_string(),
+            ruta_ejecutable: "C:\\Games\\Event.exe".to_string(),
+            categoria: "MANUAL".to_string(),
+        };
+
+        db.add_app_bloqueada(app, None, None).unwrap();
+        let apps = db.get_apps_bloqueadas().unwrap();
+        let app_id = apps[0].id.clone();
+
+        let result = db.record_event(&app_id, "BLOQUEO", "MEDIUM", 5000);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_get_estadisticas_empty() {
+        let db = create_test_db().unwrap();
+        let stats = db.get_estadisticas();
+        assert!(stats.is_ok());
+
+        let stats = stats.unwrap();
+        assert_eq!(stats.bloqueos_hoy, 0);
+        assert_eq!(stats.bloqueos_semana, 0);
+        assert!(stats.app_mas_tentacion.is_none());
+    }
+
+    #[test]
+    fn test_get_historial_empty() {
+        let db = create_test_db().unwrap();
+        let historial = db.get_historial(10);
+        assert!(historial.is_ok());
+        assert!(historial.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_get_historial_with_limit() {
+        let db = create_test_db().unwrap();
+
+        let app = NuevaApp {
+            nombre: "Limit Test".to_string(),
+            ruta_ejecutable: "C:\\Games\\Limit.exe".to_string(),
+            categoria: "MANUAL".to_string(),
+        };
+
+        db.add_app_bloqueada(app, None, None).unwrap();
+        let apps = db.get_apps_bloqueadas().unwrap();
+        let app_id = apps[0].id.clone();
+
+        for i in 0..5 {
+            db.record_event(&app_id, "BLOQUEO", "MEDIUM", i as i64 * 1000)
+                .unwrap();
+        }
+
+        let historial = db.get_historial(3);
+        assert!(historial.is_ok());
+        assert_eq!(historial.unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_multiple_horarios_same_day_no_conflict() {
+        let db = create_test_db().unwrap();
+
+        let horario1 = NuevoHorario {
+            nombre: "Morning Block".to_string(),
+            tipo: "BLOQUEADO".to_string(),
+            hora_inicio: "08:00".to_string(),
+            hora_fin: "12:00".to_string(),
+            dias: vec!["LUNES".to_string()],
+        };
+
+        let horario2 = NuevoHorario {
+            nombre: "Afternoon Block".to_string(),
+            tipo: "BLOQUEADO".to_string(),
+            hora_inicio: "14:00".to_string(),
+            hora_fin: "18:00".to_string(),
+            dias: vec!["LUNES".to_string()],
+        };
+
+        assert!(db.create_horario(horario1).is_ok());
+        assert!(db.create_horario(horario2).is_ok());
+
+        let horarios = db.get_horarios().unwrap();
+        assert_eq!(horarios.len(), 2);
+    }
+}
 
 pub struct Database {
     conn: Connection,

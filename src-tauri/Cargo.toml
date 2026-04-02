@@ -12,6 +12,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[dev-dependencies]
+tempfile = "3"
+
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
@@ -36,5 +39,6 @@ windows = { version = "0.58", features = [
     "Win32_Security",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
-    "Win32_Graphics_Gdi"
-]}
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem"
+] }

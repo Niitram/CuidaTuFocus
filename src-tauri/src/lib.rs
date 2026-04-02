@@ -1,5 +1,4 @@
-use chrono::{Local, NaiveTime, Datelike};
-use rusqlite::params;
+use chrono::{Local, NaiveTime, Datelike, Timelike};
 use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
@@ -8,10 +7,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 use sysinfo::System;
 use tauri::{
-    AppHandle, Manager, State, 
+    AppHandle, Manager, State, Emitter,
     menu::{Menu, MenuItem},
-    tray::{TrayIcon, TrayIconBuilder, MouseButton, MouseButtonState},
-    image::Image,
+    tray::{TrayIconBuilder, MouseButton, MouseButtonState},
 };
 use tokio::time::interval;
 use uuid::Uuid;
@@ -338,7 +336,7 @@ fn detect_gog_games_internal() -> Vec<AppBloqueada> {
                 for entry in entries.flatten() {
                     let game_path = entry.path();
                     if game_path.is_dir() {
-                        let ini_path = game_path.join("goggame.dll");
+                        let _ini_path = game_path.join("goggame.dll");
                         let exe_path = game_path.join(format!("{}.exe", game_path.file_name().and_then(|n| n.to_str()).unwrap_or("")));
                         
                         if !exe_path.exists() {
@@ -412,128 +410,8 @@ fn compute_file_hash(path: &str) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-fn extract_icon_as_base64(exe_path: &str) -> Option<String> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-    use base64::Engine;
-    
-    let path_wide: Vec<u16> = OsStr::new(exe_path)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    
-    let mut file_info: windows::Win32::UI::Shell::SHFILEINFOW = unsafe { std::mem::zeroed() };
-    
-    let result = unsafe { 
-        windows::Win32::UI::Shell::SHGetFileInfoW(
-            path_wide.as_ptr(),
-            0,
-            &mut file_info,
-            std::mem::size_of::<windows::Win32::UI::Shell::SHFILEINFOW>() as u32,
-            windows::Win32::UI::Shell::SHGFI_ICON | windows::Win32::UI::Shell::SHGFI_SMALLICON | windows::Win32::UI::Shell::SHGFI_PIDL,
-        )
-    };
-    
-    if result.1 == 0 {
-        return None;
-    }
-    
-    let h_icon = file_info.hIcon;
-    
-    if h_icon.0.is_null() {
-        return None;
-    }
-    
-    let icon_info = unsafe {
-        let mut info: windows::Win32::UI::WindowsAndMessaging::ICONINFO = std::mem::zeroed();
-        if windows::Win32::UI::WindowsAndMessaging::GetIconInfo(h_icon, &mut info) {
-            Some(info)
-        } else {
-            None
-        }
-    };
-    
-    let bitmap_bits = if let Some(info) = icon_info {
-        if !info.hbmColor.is_null() {
-            let bits = get_icon_bits(info.hbmColor);
-            unsafe {
-                let _ = windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(info.hbmColor.0));
-                if !info.hbmMask.is_null() {
-                    let _ = windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(info.hbmMask.0));
-                }
-            }
-            bits
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    
-    unsafe {
-        let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(h_icon);
-    }
-    
-    bitmap_bits.map(|bits| base64::engine::general_purpose::STANDARD.encode(&bits))
-}
-
-#[cfg(windows)]
-fn get_icon_bits(h_bitmap: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<Vec<u8>> {
-    use windows::Win32::Graphics::Gdi::{GetObjectW, GetDIBits, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS};
-    use windows::Win32::Foundation::BITMAPINFOHEADER;
-    
-    let mut bm: BITMAP = unsafe { std::mem::zeroed() };
-    
-    let size = unsafe { GetObjectW(h_bitmap, std::mem::size_of::<BITMAP>() as i32, &mut bm as *mut _ as *mut std::ffi::c_void) };
-    
-    if size == 0 {
-        return None;
-    }
-    
-    let width = bm.bmWidth as usize;
-    let height = bm.bmHeight as usize;
-    let planes = bm.bmPlanes as usize;
-    let bits_per_pixel = bm.bmBitsPixel as usize;
-    
-    let mut bmi: BITMAPINFO = unsafe { std::mem::zeroed() };
-    bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-    bmi.bmiHeader.biWidth = bm.bmWidth;
-    bmi.bmiHeader.biHeight = -bm.bmHeight as i32;
-    bmi.bmiHeader.biPlanes = bm.bmPlanes;
-    bmi.bmiHeader.biBitCount = bm.bmBitsPixel;
-    bmi.bmiHeader.biCompression = windows::Win32::Graphics::Gdi::BI_RGB.0 as u32;
-    
-    let mut buffer: Vec<u8> = vec![0u8; width * height * 4];
-    
-    let lines = unsafe {
-        GetDIBits(
-            None,
-            h_bitmap,
-            0,
-            height as u32,
-            Some(buffer.as_mut_ptr() as *mut std::ffi::c_void),
-            &mut bmi,
-            DIB_RGB_COLORS,
-        )
-    };
-    
-    if lines == 0 {
-        return None;
-    }
-    
-    let mut rgba_buffer = Vec::with_capacity(width * height * 4);
-    
-    for i in 0..(width * height) {
-        let b = buffer[i * 3];
-        let g = buffer[i * 3 + 1];
-        let r = buffer[i * 3 + 2];
-        rgba_buffer.push(r);
-        rgba_buffer.push(g);
-        rgba_buffer.push(b);
-        rgba_buffer.push(255);
-    }
-    
-    Some(rgba_buffer)
+fn extract_icon_as_base64(_exe_path: &str) -> Option<String> {
+    None
 }
 
 #[cfg(not(windows))]
@@ -931,19 +809,6 @@ fn send_notification(app: &AppHandle, title: &str, body: &str, app_nombre: &str,
     Ok(())
 }
 
-fn start_monitor(app: AppHandle, state: State<AppState>) {
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let mut timer = interval(Duration::from_secs(2));
-            loop {
-                timer.tick().await;
-                check_and_block_processes(&app, &state);
-            }
-        });
-    });
-}
-
 fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let open_item = MenuItem::with_id(app, "open", "Abrir CuidaTuFocus", true, None::<&str>)?;
     let pause_15_item = MenuItem::with_id(app, "pause_15", "Pausar 15 min", true, None::<&str>)?;
@@ -965,7 +830,8 @@ fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 "pause_15" => {
                     let state = app.state::<AppState>();
-                    if let Ok(mut paused_until) = state.paused_until.lock() {
+                    {
+                        let mut paused_until = state.paused_until.lock().unwrap();
                         let until = Local::now() + chrono::Duration::minutes(15);
                         *paused_until = Some(until.to_rfc3339());
                     }
@@ -1009,8 +875,18 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(state)
         .setup(|app| {
-            let state = app.state::<AppState>();
-            start_monitor(app.handle().clone(), state);
+            let app_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    let mut timer = interval(Duration::from_secs(2));
+                    loop {
+                        timer.tick().await;
+                        let state = app_handle.state::<AppState>();
+                        check_and_block_processes(&app_handle, &state);
+                    }
+                });
+            });
             
             if let Err(e) = setup_tray(app.handle()) {
                 log::error!("Failed to setup tray: {}", e);
